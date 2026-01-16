@@ -16,7 +16,7 @@ It also includes:
 
 The following diagram illustrates how the system works for both on-call engineers and platform engineers:
 
-![On-Call Engineer Workflow and Platform Engineer Role](docs/workflow.png)
+![On-Call Engineer Workflow and Platform Engineer Role](docs/workflow.jpg)
 
 **On-Call Engineer Workflow:**
 1. Ask a question in Slack by mentioning the bot
