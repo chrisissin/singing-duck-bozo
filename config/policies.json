@@ -32,8 +32,20 @@
         "missing_fields": ["zone", "mig_name"],
         "parse_method": "policy"
       },
-      "action_template": "gcloud compute instance-groups managed recreate-instances <MIG> --instances={instance_name} --zone=<ZONE> --project={project_id}",
-      "summary_template": "Disk utilization below threshold. {action}",
+      
+      "action_template": "gcloud compute ssh {instance_name}  --project {project_id} --internal-ip --command='sudo du -hd2 / | sort -rh | head -n 10' ",
+      "summary_template": "Disk utilization below threshold. Please take following actions to see what's taking up space for example :\n\n$ sudo du -hd2 / | sort -rh | head -n 10\n27G\t/var\n25G\t/var/log <-- This is the issue\n\n{action}",
+      "default_decision": "AUTO_REPLACE",
+      "decision_rules": [
+        {
+          "condition": {
+            "instance_name": {
+              "startsWith": "mcoc-production-timerd"
+            }
+          },
+          "decision": "NEEDS_APPROVAL"
+        }
+      ],
       "sample_texts": [
         "Disk utilization for project-123 instance-456 threshold of 80.0 with a value of 65.5"
       ]
@@ -70,10 +82,152 @@
         "missing_fields": ["zone"],
         "parse_method": "policy"
       },
-      "action_template": "gcloud compute instances stop {instance_name} --zone=<ZONE> --project={project_id}",
-      "summary_template": "CPU utilization above threshold. {action}",
+      "action_template": "gcloud compute instance-groups managed set-autoscaling {instance_name} --min-num-replicas=2 --max-num-replicas=10 --zone=<ZONE> --project={project_id}",
+      "summary_template": "CPU utilization above threshold. Scaling up managed instance group minimum instances. {action}",
+      "default_decision": "AUTO_REPLACE",
+      "decision_rules": [
+        {
+          "condition": {
+            "instance_name": {
+              "startsWith": "mcoc-production-timerd"
+            }
+          },
+          "decision": "NEEDS_APPROVAL"
+        }
+      ],
       "sample_texts": [
         "CPU utilization for project-123 instance-456 CPU usage 95.5% exceeds threshold 80.0%"
+      ]
+    },
+    {
+      "alert_type": "game_performance_issue",
+      "name": "Game Performance Issue",
+      "patterns": [
+        {
+          "type": "regex",
+          "pattern": "game is slow",
+          "capture_groups": {}
+        }
+      ],
+      "extraction_rules": {
+        "alert_type": "game_performance_issue",
+        "project_id": null,
+        "instance_name": null,
+        "metric_labels": {},
+        "threshold_percent": null,
+        "value_percent": null,
+        "policy_name": null,
+        "condition_name": null,
+        "violation_started_raw": null,
+        "gcp_alert_url": null,
+        "confidence": 0.8,
+        "missing_fields": ["project_id", "instance_name", "zone"],
+        "parse_method": "policy"
+      },
+      "action_template": "gcloud compute instance-groups managed set-autoscaling <MIG_NAME> --min-num-replicas=2 --max-num-replicas=10 --zone=<ZONE> --project=<PROJECT_ID>",
+      "summary_template": "Game performance issue detected (game is slow). Scaling up managed instance group to improve performance. {action}",
+      "default_decision": "NEEDS_APPROVAL",
+      "sample_texts": [
+        "game is slow"
+      ]
+    },
+    {
+      "alert_type": "scaling_intent_detected",
+      "name": "Scaling Intent Detection",
+      "patterns": [],
+      "extraction_rules": {
+        "alert_type": "scaling_intent_detected",
+        "project_id": null,
+        "instance_name": null,
+        "metric_labels": {},
+        "threshold_percent": null,
+        "value_percent": null,
+        "policy_name": null,
+        "condition_name": null,
+        "violation_started_raw": null,
+        "gcp_alert_url": null,
+        "confidence": 0.7,
+        "missing_fields": ["service_name", "schedule_name", "schedule_expression"],
+        "parse_method": "llm"
+      },
+      "action_templates": [
+        {
+          "label": "Scale Up via GCP Command",
+          "template": "MCP:execute_gcloud_scale_up",
+          "description": "Execute a gcloud command to scale up instances immediately",
+          "gcloud_command_template": "gcloud compute instance-groups managed resize {mig_name} --size={target_size} --zone={zone} --project={project_id}"
+        },
+        {
+          "label": "Scale Up via Git PR",
+          "template": "MCP:generate_terragrunt_autoscaler_diff",
+          "description": "Generate a terragrunt autoscaler configuration diff for a pull request"
+        }
+      ],
+      "summary_template": "🔍 *Scaling Intent Detected*\n\nI detected that you need to scale up your servers. {user_intent}\n\nI can help you scale up in two ways:\n\n{action_options}",
+      "default_decision": "NEEDS_APPROVAL",
+      "sample_texts": [
+        "we're getting crushed by traffic",
+        "we need more power",
+        "can we spin up more servers",
+        "we're handling too much load",
+        "the system is overwhelmed",
+        "we need to scale up",
+        "add more capacity",
+        "increase server capacity",
+        "we need more instances",
+        "traffic is too high",
+        "servers are overloaded",
+        "need to handle more users"
+      ]
+    },
+    {
+      "alert_type": "add_memory_to_vm",
+      "name": "Add Memory to VM",
+      "patterns": [
+        {
+          "type": "regex",
+          "pattern": "(add|increase|upgrade|more).*?(memory|ram).*?(to|for|on|in).*?(vm|virtual\\s+machine|instance)",
+          "capture_groups": {}
+        },
+        {
+          "type": "regex",
+          "pattern": "(vm|virtual\\s+machine|instance).*?(needs?|requires?|wants?).*?(more\\s+)?(memory|ram)",
+          "capture_groups": {}
+        },
+        {
+          "type": "regex",
+          "pattern": "(change|upgrade|modify).*?machine.*?type.*?(memory|ram)",
+          "capture_groups": {}
+        }
+      ],
+      "extraction_rules": {
+        "alert_type": "add_memory_to_vm",
+        "project_id": null,
+        "instance_name": null,
+        "metric_labels": {},
+        "threshold_percent": null,
+        "value_percent": null,
+        "policy_name": null,
+        "condition_name": null,
+        "violation_started_raw": null,
+        "gcp_alert_url": null,
+        "confidence": 0.8,
+        "missing_fields": ["environment", "service_name", "current_machine_type", "target_machine_type"],
+        "parse_method": "llm"
+      },
+      "action_template": "MCP:generate_machine_type_diff",
+      "summary_template": "💾 *Add Memory to VM Request Detected*\n\nI can help you add memory to a VM in the mcoc project. Here's what you need to do:\n\n1. **Check the VM's current machine type** in the terragrunt.hcl files in git\n   - Example: qaprod's matchmakerd_drb is `c2d-standard-2`\n   - Link: https://github.com/explodingbarrel/mcoc-preprod/blob/master/qaprod/matchmakerd_drb/terragrunt.hcl#L93\n\n2. **Find memory offerings** in GCP's VM family\n   - Example: `c2d-standard-4` offers 16GB vs `c2d-standard-2` 8GB\n   - Link: https://docs.cloud.google.com/compute/docs/compute-optimized-machines\n\n3. **Check GCP VM pricing**\n   - Link: https://cloud.google.com/compute/vm-instance-pricing?hl=en\n\n4. **Generate the PR diff** - I'll create the diff for you below:\n\n{action}",
+      "default_decision": "NEEDS_APPROVAL",
+      "sample_texts": [
+        "add memory to vm",
+        "increase vm memory",
+        "upgrade vm memory",
+        "add more memory to the vm",
+        "change machine type to get more memory",
+        "upgrade machine type for more memory",
+        "need more memory on the vm",
+        "vm needs more memory",
+        "increase memory for vm"
       ]
     }
   ]

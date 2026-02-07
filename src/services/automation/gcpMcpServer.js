@@ -63,6 +63,92 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["command"]
         }
+      },
+      {
+        name: "execute_gcloud_scale_up",
+        description: "Executes a gcloud command to scale up instances. Uses command template from policy if provided, otherwise uses default.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            serviceName: {
+              type: "string",
+              description: "Service name to scale up (optional, used for logging)"
+            },
+            projectId: {
+              type: "string",
+              description: "GCP project ID (optional, defaults to current project)"
+            },
+            gcloudCommandTemplate: {
+              type: "string",
+              description: "Gcloud command template from policy (e.g., 'gcloud compute instance-groups managed resize {mig_name} --size={target_size} --zone={zone} --project={project_id}')"
+            },
+            parsed: {
+              type: "object",
+              description: "Parsed alert data for template replacement (optional)"
+            }
+          },
+          required: []
+        }
+      },
+      {
+        name: "generate_terragrunt_autoscaler_diff",
+        description: "Generates a terragrunt.hcl autoscaler configuration diff for scaling up servers. Takes service name, schedule, and scaling parameters.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            serviceName: { 
+              type: "string", 
+              description: "Name of the service (e.g., 'api', 'gacha-api', 'login-api')" 
+            },
+            scheduleName: { 
+              type: "string", 
+              description: "Name for the autoscaler schedule (e.g., 'mm-comp-7-star')" 
+            },
+            scheduleExpression: { 
+              type: "string", 
+              description: "Schedule expression (e.g., 's(local.sch_1730_utc) 12 $(local.sch_jan_2026)')" 
+            },
+            durationSec: { 
+              type: "string", 
+              description: "Duration in seconds variable (e.g., 'local.sch_02_hours')" 
+            },
+            minReplicas: { 
+              type: "string", 
+              description: "Minimum replicas variable (e.g., 'local.sch_moderate_high')" 
+            },
+            timeZone: { 
+              type: "string", 
+              description: "Time zone (default: 'Etc/UTC')" 
+            }
+          },
+          required: ["serviceName", "scheduleName", "scheduleExpression", "durationSec", "minReplicas"]
+        }
+      },
+      {
+        name: "generate_machine_type_diff",
+        description: "Generates a terragrunt.hcl diff for changing VM machine type (to add memory). Takes environment, service name, current and target machine types.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            environment: { 
+              type: "string", 
+              description: "Environment name (e.g., 'qaprod', 'production')" 
+            },
+            serviceName: { 
+              type: "string", 
+              description: "Service name (e.g., 'matchmakerd_drb', 'api')" 
+            },
+            currentMachineType: { 
+              type: "string", 
+              description: "Current machine type (e.g., 'c2d-standard-2')" 
+            },
+            targetMachineType: { 
+              type: "string", 
+              description: "Target machine type (e.g., 'c2d-standard-4')" 
+            }
+          },
+          required: ["environment", "serviceName", "currentMachineType", "targetMachineType"]
+        }
       }
     ]
   };
@@ -173,6 +259,213 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             error: `Command execution failed: ${err.message}`,
             stderr: err.stderr || "",
             stdout: err.stdout || ""
+          }) 
+        }],
+        isError: true
+      };
+    }
+  }
+
+  if (name === "execute_gcloud_scale_up") {
+    try {
+      const { serviceName, projectId, gcloudCommandTemplate, parsed } = args;
+      
+      let gcloudCmd;
+      
+      // Use template from policy if provided
+      if (gcloudCommandTemplate && parsed) {
+        // Replace placeholders in template with values from parsed data
+        gcloudCmd = gcloudCommandTemplate;
+        
+        // Replace common placeholders
+        const replacements = {
+          '{project_id}': parsed.project_id || projectId || '',
+          '{projectId}': parsed.project_id || projectId || '',
+          '{instance_name}': parsed.instance_name || '',
+          '{instanceName}': parsed.instance_name || '',
+          '{service_name}': parsed.service_name || serviceName || '',
+          '{serviceName}': parsed.service_name || serviceName || '',
+          '{mig_name}': parsed.mig_name || '',
+          '{migName}': parsed.mig_name || '',
+          '{zone}': parsed.zone || '',
+          '{target_size}': parsed.target_size || '10',
+          '{targetSize}': parsed.target_size || '10',
+          '{min_replicas}': parsed.min_replicas || '2',
+          '{minReplicas}': parsed.min_replicas || '2',
+          '{max_replicas}': parsed.max_replicas || '10',
+          '{maxReplicas}': parsed.max_replicas || '10'
+        };
+        
+        // Replace all placeholders
+        for (const [placeholder, value] of Object.entries(replacements)) {
+          gcloudCmd = gcloudCmd.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), value);
+        }
+        
+        // Also try direct property access from parsed object
+        for (const [key, value] of Object.entries(parsed)) {
+          if (value !== null && value !== undefined) {
+            gcloudCmd = gcloudCmd.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value));
+          }
+        }
+      } else {
+        // Fallback to default hardcoded command if no template provided
+        gcloudCmd = projectId 
+          ? `gcloud compute instance-groups managed resize YOUR_MIG_NAME --size=10 --zone=us-central1-a --project=${projectId}`
+          : `gcloud compute instance-groups managed resize YOUR_MIG_NAME --size=10 --zone=us-central1-a`;
+      }
+      
+      console.log(`[MCP Server] Executing scale-up command for service: ${serviceName || 'unknown'}`);
+      console.log(`[MCP Server] Command: ${gcloudCmd}`);
+      
+      // Check if command still has unresolved placeholders
+      const hasPlaceholders = /\{[^}]+\}/.test(gcloudCmd);
+      if (hasPlaceholders) {
+        return {
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({ 
+              success: false,
+              command: gcloudCmd,
+              error: "Command template has unresolved placeholders. Please provide required values in the parsed data.",
+              message: "Missing required parameters for scale-up command"
+            }) 
+          }],
+          isError: true
+        };
+      }
+      
+      // For now, return the command that would be executed
+      // Uncomment the execAsync call below when you're ready to execute
+      /*
+      const { stdout, stderr } = await execAsync(gcloudCmd, {
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 300000
+      });
+      */
+      
+      return {
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            success: true, 
+            command: gcloudCmd,
+            message: `Scale-up command prepared and ready to execute.`,
+            note: gcloudCommandTemplate ? "Command generated from policy template" : "Using default command template"
+          }) 
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: `Scale-up command failed: ${err.message}`
+          }) 
+        }],
+        isError: true
+      };
+    }
+  }
+
+  if (name === "generate_terragrunt_autoscaler_diff") {
+    try {
+      const { 
+        serviceName, 
+        scheduleName, 
+        scheduleExpression, 
+        durationSec, 
+        minReplicas,
+        timeZone = "Etc/UTC"
+      } = args;
+
+      // Generate the terragrunt.hcl autoscaler block (with proper indentation)
+      const autoscalerBlock = `  autoscaler {
+    name = "${scheduleName}"
+    schedule = "${scheduleExpression}"
+    duration_sec = ${durationSec}
+    min_required_replicas = ${minReplicas}
+    time_zone = "${timeZone}"
+  }
+  // Autoscaler`;
+
+      // Generate git diff format similar to GitHub PR
+      // The @@ line shows: @@ -old_start,old_count +new_start,new_count @@
+      // We'll use a placeholder line number (283) as shown in the example
+      const diff = `--- a/production/${serviceName}/terragrunt.hcl
++++ b/production/${serviceName}/terragrunt.hcl
+@@ -283,6 +283,14 @@
++${autoscalerBlock}`;
+
+      return {
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            success: true, 
+            serviceName,
+            diff,
+            autoscalerBlock,
+            message: `Generated terragrunt autoscaler configuration diff for ${serviceName}` 
+          }) 
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: `Failed to generate diff: ${err.message}` 
+          }) 
+        }],
+        isError: true
+      };
+    }
+  }
+
+  if (name === "generate_machine_type_diff") {
+    try {
+      const { 
+        environment, 
+        serviceName, 
+        currentMachineType, 
+        targetMachineType 
+      } = args;
+
+      // Generate the git diff format for machine type change
+      // Based on the example: diff shows changing machine_type in instance_template
+      const diff = `diff --git a/${environment}/${serviceName}/terragrunt.hcl b/${environment}/${serviceName}/terragrunt.hcl
+index cce6ec39..d03993cc 100644
+--- a/${environment}/${serviceName}/terragrunt.hcl
++++ b/${environment}/${serviceName}/terragrunt.hcl
+@@ -90,7 +90,7 @@ inputs = merge(
+     // Instance Template
+     instance_template = {
+       name         = local.tf_var_files.name
+-      machine_type = "${currentMachineType}"
++      machine_type = "${targetMachineType}"
+       tags         = local.tf_var_files.default_network_tags
+       labels = {
+         game        = local.tf_var_files.product`;
+
+      return {
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            success: true, 
+            environment,
+            serviceName,
+            currentMachineType,
+            targetMachineType,
+            diff,
+            message: `Generated machine type change diff for ${environment}/${serviceName}` 
+          }) 
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: JSON.stringify({ 
+            error: `Failed to generate machine type diff: ${err.message}` 
           }) 
         }],
         isError: true

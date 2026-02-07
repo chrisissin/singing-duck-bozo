@@ -25,7 +25,8 @@ export async function processIncomingMessage({ text, channel_id }) {
     const report = await formatReport({ 
       parsed: parseResult.parsed, 
       decision, 
-      policy: parseResult.policy 
+      policy: parseResult.policy,
+      originalText: text
     });
     
     policyResult = {

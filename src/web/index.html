@@ -1,14 +1,57 @@
 <!doctype html>
 <html>
+<head>
+  <title>Duck Bot - Web UI</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    textarea { width: 100%; max-width: 800px; }
+    button { margin: 10px 0; padding: 8px 16px; }
+    pre { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }
+    #output { white-space: pre-wrap; word-wrap: break-word; }
+    #o { max-height: 400px; overflow-y: auto; }
+    h3 { margin-top: 20px; margin-bottom: 10px; }
+  </style>
+</head>
 <body>
-<textarea id="t" rows="10" cols="120"></textarea><br/>
-<button onclick="run()">Run</button>
-<pre id="o"></pre>
-<script>
-async function run(){
- const r=await fetch('/api/analyze',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:document.getElementById('t').value})});
- document.getElementById('o').textContent=JSON.stringify(await r.json(),null,2);
-}
-</script>
+  <h2>Slack RAG Bot - Query Interface</h2>
+  <textarea id="t" rows="10" cols="120" placeholder="Enter your query here..."></textarea><br/>
+  <button onclick="run()">Run</button>
+  
+  <h3>Response Text:</h3>
+  <pre id="output"></pre>
+  
+  <h3>Full Result:</h3>
+  <pre id="o"></pre>
+  
+  <script>
+    async function run(){
+      const textarea = document.getElementById('t');
+      const output = document.getElementById('output');
+      const fullResult = document.getElementById('o');
+      
+      // Clear previous results
+      output.textContent = '';
+      fullResult.textContent = 'Loading...';
+      
+      try {
+        const r = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text: textarea.value })
+        });
+        
+        const result = await r.json();
+        
+        // Display the response text
+        output.textContent = result.text || 'No response text';
+        
+        // Display the full result object
+        fullResult.textContent = JSON.stringify(result, null, 2);
+      } catch (error) {
+        output.textContent = 'Error: ' + error.message;
+        fullResult.textContent = 'Error: ' + error.message;
+      }
+    }
+  </script>
 </body>
 </html>

@@ -1,233 +1,230 @@
-# Autoheal MVP Architecture
+# Architecture Overview
 
-## System Architecture Diagram
+## Entry Point: `server.js`
 
-```mermaid
-graph TB
-    subgraph "Client Layer"
-        UI[Web UI<br/>index.html]
-    end
-    
-    subgraph "API Layer"
-        Server[Express Server<br/>server.js]
-        API[/api/analyze<br/>POST endpoint]
-    end
-    
-    subgraph "Configuration (External)"
-        Policies[Policy Config<br/>config/policies.json<br/>Organization-specific]
-        PolicyExample[Example Config<br/>config/policies.json.example]
-    end
-    
-    subgraph "Processing Pipeline"
-        ParserEngine[Parser Engine<br/>parserEngine.js]
-        PolicyParser[Policy Parser<br/>Regex Matching]
-        LLMParser[LLM Parser<br/>Ollama Fallback]
-        Schema[Schema Validator<br/>schema.js]
-        Decision[Decision Engine<br/>decide.js]
-        Report[Report Formatter<br/>formatReport.js]
-        MCP[MCP Client<br/>mcpClient.js]
-    end
-    
-    subgraph "External Services"
-        Ollama[Ollama Server<br/>Local LLM]
-        MCPServer[MCP Server<br/>Automation]
-    end
-    
-    UI -->|POST /api/analyze<br/>JSON: text| API
-    API -->|parseAlert| ParserEngine
-    Policies -->|load from config| ParserEngine
-    PolicyExample -.->|copy to create| Policies
-    ParserEngine -->|try policy match| PolicyParser
-    PolicyParser -->|if no match| LLMParser
-    LLMParser -->|API call| Ollama
-    PolicyParser -->|validated data| Schema
-    LLMParser -->|validated data| Schema
-    Schema -->|parsed alert| Decision
-    Decision -->|decision + policy| Report
-    Report -->|if AUTO_REPLACE| MCP
-    MCP -->|execute action| MCPServer
-    Report -->|formatted report| API
-    API -->|JSON response| UI
-    
-    style UI fill:#e1f5ff
-    style Server fill:#fff4e1
-    style API fill:#fff4e1
-    style Policies fill:#fff9c4
-    style ParserEngine fill:#e8f5e9
-    style PolicyParser fill:#e8f5e9
-    style LLMParser fill:#e8f5e9
-    style Schema fill:#e8f5e9
-    style Decision fill:#f3e5f5
-    style Report fill:#f3e5f5
-    style MCP fill:#ffebee
-    style Ollama fill:#e3f2fd
-    style MCPServer fill:#e3f2fd
-```
+The project now uses `src/server.js` as the unified entry point that handles:
 
-## Component Details
+1. **Slack Bot Events** - Receives and processes Slack mentions
+2. **Web UI** - Serves a web interface and API endpoints
+3. **Parse-Decide-Action Pipeline** - Processes alerts and makes decisions
+4. **RAG Chat History** - Falls back to searching Slack history
 
-### Client Layer
-- **Web UI** (`src/web/index.html`): Simple HTML interface with textarea for alert input and button to trigger analysis
-
-### API Layer
-- **Express Server** (`src/server.js`): 
-  - Serves static web files
-  - Exposes `/api/analyze` POST endpoint
-  - Handles JSON request/response
-  - Error handling for parsing failures
-
-### Configuration Layer
-- **Policy Configuration** (`config/policies.json`):
-  - **Separated from core code** to allow open-sourcing the parser/decision engine
-  - Each organization/project maintains their own policies file
-  - Configurable via `POLICIES_PATH` environment variable (defaults to `config/policies.json`)
-  - Example file provided: `config/policies.json.example`
-  - Each policy defines:
-    - `alert_type`: Type of alert (e.g., "disk_utilization_low", "cpu_utilization_high")
-    - `patterns`: Array of regex patterns with capture groups
-    - `extraction_rules`: Default values and metadata
-    - `action_template`: Template for generating action commands
-    - `summary_template`: Template for generating summary messages
-    - `sample_texts`: Example alert texts for reference
-  - Human-editable, allows easy extension for new alert types
-  - Excluded from git (via `.gitignore`) so each organization can customize without conflicts
-
-### Processing Pipeline
-
-1. **Parser Engine** (`src/parser/parserEngine.js`):
-   - Main entry point for alert parsing
-   - Orchestrates policy-based and LLM parsing
-   - **Policy Parser**: 
-     - Loads policies from JSON configuration
-     - Attempts to match alert text against regex patterns
-     - Extracts structured data using capture groups
-     - Fast and deterministic
-   - **LLM Parser** (Fallback):
-     - Invoked when policy parsing fails
-     - Uses local Ollama LLM for intelligent parsing
-     - Handles novel alert formats not covered by policies
-     - Returns structured data matching the schema
-     - Configurable via `OLLAMA_URL` and `OLLAMA_MODEL` environment variables
-   - Returns parsed alert with matched policy (if applicable)
-
-2. **Schema Validator** (`src/parser/schema.js`):
-   - Uses Zod for schema validation
-   - Generic `ParsedAlertSchema` supporting multiple alert types
-   - Ensures parsed data matches expected structure
-   - Validates types and required fields
-   - Backward compatible with `ParsedDiskAlertSchema`
-
-3. **Decision Engine** (`src/decision/decide.js`):
-   - Makes auto-heal decision based on parsed data
-   - Can use policy-specific decision rules (future enhancement)
-   - Returns `AUTO_REPLACE` if instance_name starts with "-"
-   - Returns `NEEDS_APPROVAL` otherwise
-   - Extensible for more sophisticated decision logic
-
-4. **Report Formatter** (`src/report/formatReport.js`):
-   - Combines parsed data, decision, and policy
-   - Formats action command using policy's `action_template`
-   - Formats summary using policy's `summary_template`
-   - Integrates with MCP client for automation
-   - Returns comprehensive report with execution status
-
-5. **MCP Client** (`src/report/mcpClient.js`):
-   - Model Context Protocol integration for automation
-   - Executes actions when decision is `AUTO_REPLACE`
-   - Sends action commands and context to MCP server
-   - Returns execution results and status
-   - Enabled via `ENABLE_MCP=true` environment variable
-
-## Data Flow
+## Architecture Flow
 
 ```
-User Input (Alert Text)
-    ↓
-POST /api/analyze
-    ↓
-parseAlert()
-    ↓
-┌─────────────────────────────────┐
-│ Try Policy-Based Parsing        │
-│ - Load policies.json            │
-│ - Match regex patterns          │
-│ - Extract structured data       │
-└─────────────────────────────────┘
-    ↓ (if no match)
-┌─────────────────────────────────┐
-│ Try LLM Parsing (Fallback)      │
-│ - Call Ollama API               │
-│ - Use local LLM model           │
-│ - Extract structured data       │
-└─────────────────────────────────┘
-    ↓
-validateParsedAlert() → Zod validation
-    ↓
-decide() → Decision logic
-    ↓
-formatReport()
-    ↓
-┌─────────────────────────────────┐
-│ If AUTO_REPLACE & MCP enabled:  │
-│ - Format action from template   │
-│ - Execute via MCP client        │
-│ - Get execution result          │
-└─────────────────────────────────┘
-    ↓
-JSON Response → { 
-  parsed, 
-  decision, 
-  action, 
-  summary, 
-  mcp_executed, 
-  mcp_result 
-}
+┌─────────────────────────────────────────────────────────┐
+│                    server.js                            │
+│  (ExpressReceiver + Slack Bolt App)                     │
+└──────────────┬──────────────────────┬──────────────────┘
+               │                      │
+               │                      │
+    ┌──────────▼──────────┐  ┌───────▼──────────┐
+    │  Slack Events       │  │  Web API         │
+    │  (app_mention)      │  │  (/api/analyze)  │
+    │  channel_id: C123   │  │  channel_id: null│
+    └──────────┬──────────┘  └───────┬──────────┘
+               │                      │
+               └──────────┬───────────┘
+                          │
+               ┌──────────▼──────────┐
+               │  orchestrator.js    │
+               │  processIncomingMessage() │
+               └──────────┬──────────┘
+                          │
+        ┌─────────────────┴─────────────────┐
+        │                                     │
+┌───────▼────────┐                  ┌───────▼────────┐
+│  Parser Engine │                  │  RAG System     │
+│  (parseAlert)  │                  │  (retrieveContexts) │
+│                │                  │                 │
+│  ┌──────────┐  │                  │  Slack: Filter │
+│  │ Policies │  │                  │  by channel_id │
+│  │ (Pluggable│  │                  │  Web UI: All   │
+│  │  per org)│  │                  │  channels      │
+│  └────┬─────┘  │                  └───────┬────────┘
+│       │        │                          │
+│       │ Load from                        │
+│       │ config/policies.json             │
+│       │ (org-specific)                   │
+│       │                                  │
+└───────┼────────┘                  ┌───────▼────────┐
+        │                           │  Build Prompt  │
+        │ (if matched)              │  + Ollama Chat │
+        │                           └────────────────┘
+┌───────▼────────┐
+│  Decision      │
+│  (decide)      │
+└───────┬────────┘
+        │
+        ├── AUTO_REPLACE ──► Execute via MCP (if enabled)
+        │
+        ├── NEEDS_APPROVAL ──► Slack: Request Approval
+        │                      │
+        │                      ├── User Approves ──► Execute via MCP
+        │                      │
+        │                      └── User Rejects ──► Cancel Action
+        │
+        └── NO_ACTION ──► Return message, no action taken
+┌───────▼────────┐
+│  Format Report │
+│  (formatReport)│
+└───────┬────────┘
+        │
+┌───────▼────────┐
+│  MCP Client    │
+│  (mcpClient)   │
+│  ┌──────────┐  │
+│  │ GCP MCP  │  │
+│  │ Server   │  │
+│  └──────────┘  │
+└────────────────┘
 ```
+
+### Key Architecture Features
+
+**1. Pluggable Policies for Different Organizations**
+- Policies are stored in `config/policies.json` (configurable via `POLICIES_PATH` env var)
+- Each organization can maintain their own policies file without modifying core code
+- Policies are excluded from git (via `.gitignore`) to allow organization-specific customization
+- The parser engine automatically loads and applies policies at runtime
+- No code changes needed to add new alert types - just update the JSON configuration
+
+**2. RAG Behavior Differences**
+
+**Slack Interface:**
+- Provides RAG with **relevant channel history only**
+- Filters chunks by `channel_id` matching the event's channel
+- Ensures users only see context from channels they have access to
+- Safe default: no cross-channel data leakage
+
+**Web UI:**
+- Combines **all history across all channels**
+- Uses `channel_id: null` to search across all indexed chunks
+- Provides comprehensive context for analysis
+- Useful for cross-channel research and analysis
+
+## Security & Privacy: Internal-Only Ecosystem
+
+**Important**: This architecture is designed to keep all data processing internal and private:
+
+- **All components run internally** - No external LLM APIs (OpenAI, Anthropic, etc.)
+- **Local Ollama** - All LLM processing uses local Ollama instance (no data leaves your infrastructure)
+- **Internal Database** - Postgres with pgvector runs locally/internally
+- **Only Slack Interface is External** - The Slack API is the only external service (required for Slack integration)
+- **No Data Training** - Internal data never reaches public models or external training systems
+- **Privacy-First Design** - Ensures sensitive internal conversations and alerts remain within your organization
+
+This design addresses concerns about:
+- Internal data being used to train public models
+- Data leakage to external services
+- Compliance with data privacy regulations
+- Control over sensitive organizational information
+
+## Key Components
+
+### 1. `server.js` (Entry Point)
+- Uses `ExpressReceiver` from Slack Bolt to handle both Slack events and Express routes
+- Serves web UI from `src/web/` directory
+- Provides `/api/analyze` endpoint for web interface
+- Handles Slack `app_mention` events
+
+### 2. `orchestrator.js` (Core Logic)
+- **Phase 1**: Tries to parse incoming text as an alert using `parseAlert()`
+  - If matched → goes to decision engine
+  - Always runs RAG in parallel (even if policy matched)
+- **Phase 2**: Always searches Slack history using RAG
+  - **Slack**: Filters by `channel_id` to get relevant channel history only
+  - **Web UI**: Uses `channel_id: null` to search across all channels
+  - Retrieves relevant context from indexed messages
+  - Generates answer using Ollama
+- **Phase 3**: Combines results
+  - If both policy and RAG matched → returns both results
+  - If only one matched → returns that result
+  - Provides comprehensive response with policy actions and historical context
+
+### 3. Parser Engine (`parser/parserEngine.js`)
+- **Policy-based parsing** (regex patterns)
+  - Loads policies from `config/policies.json` (organization-specific)
+  - Each organization can customize policies without code changes
+  - Policies are pluggable via `POLICIES_PATH` environment variable
+  - Supports multiple alert types with pattern matching and extraction rules
+- **LLM-based parsing** (fallback)
+  - Uses Ollama when policy parsing fails
+  - Handles novel alert formats not covered by policies
+- Returns structured alert data
+
+### 4. Decision Engine (`decision/decide.js`)
+- Makes decisions based on parsed alerts
+- Returns `AUTO_REPLACE`, `NEEDS_APPROVAL`, or `NO_ACTION`
+- **AUTO_REPLACE**: Action is executed immediately via MCP (if enabled)
+- **NEEDS_APPROVAL**: Slack bot requests user approval with interactive buttons
+- **NO_ACTION**: No action is taken, message is returned to user
+
+### 5. Report Formatter (`report/formatReport.js`)
+- Formats the final report/action
+- Executes MCP actions automatically if decision is `AUTO_REPLACE` and MCP is enabled
+- For `NEEDS_APPROVAL`, returns action details for Slack approval UI
+
+### 6. Approval Flow (Slack Integration)
+- When decision is `NEEDS_APPROVAL`, Slack bot posts message with approval buttons
+- User can click "✅ Approve & Execute" or "❌ Reject"
+- On approval, action is executed via MCP client
+- On rejection, action is cancelled and message is updated
+
+### 7. MCP Client & Server (`report/mcpClient.js`, `services/automation/gcpMcpServer.js`)
+- **MCP Client**: Communicates with MCP server to execute actions
+- **MCP Server**: GCP automation server running as a local service
+  - Tool: `discover_instance_metadata` - Finds zone and MIG for an instance
+  - Tool: `execute_recreate_instance` - Recreates instance in Managed Instance Group
+- Server runs via stdio transport and can be started with `npm run mcp:server`
+
+### 6. RAG System (`rag/`)
+- `retrieve.js` - Searches indexed chunks
+  - **Slack**: Filters by `channel_id` for channel-specific context
+  - **Web UI**: Searches all channels when `channel_id` is null
+- `prompt.js` - Builds prompts for LLM
+- `ollama.js` - Interfaces with Ollama
+
+**RAG Channel Filtering:**
+- The `searchSimilar()` function in `db/slackChunksRepo.js` handles channel filtering
+- When `channel_id` is provided (Slack), it filters: `WHERE channel_id = $2`
+- When `channel_id` is null/undefined (Web UI), it searches all: no WHERE clause
+- This ensures Slack users only see relevant channel history, while Web UI provides comprehensive cross-channel context
+
+## Running the Server
+
+```bash
+# Start the unified server (handles both Slack and Web)
+npm start
+# or
+npm run server
+
+# Legacy: Run old bot.js (Slack only)
+npm run bot
+
+# Indexing (unchanged)
+npm run backfill:all
+npm run sync:once
+```
+
+## Endpoints
+
+- **Slack Events**: `POST /slack/events` (handled by Slack Bolt)
+- **Web UI**: `GET /` (serves `src/web/index.html`)
+- **API**: `POST /api/analyze` (accepts `{ text: "..." }`)
 
 ## Environment Variables
 
-- `POLICIES_PATH`: Path to policies.json file (default: `config/policies.json`)
-- `OLLAMA_URL`: URL of the Ollama server (default: `http://localhost:11434`)
-- `OLLAMA_MODEL`: Model name to use for LLM parsing (default: `llama3`)
-- `ENABLE_MCP`: Set to `"true"` to enable MCP automation
-- `MCP_SERVER_URL`: URL of the MCP server endpoint
-- `MCP_AUTH_TOKEN`: Optional authentication token for MCP server
+Required:
+- `SLACK_BOT_TOKEN` - Bot token from Slack
+- `SLACK_SIGNING_SECRET` - Signing secret from Slack
 
-## Dependencies
+Optional:
+- `PORT` - Server port (default: 3000)
+- `OLLAMA_BASE_URL` - Ollama URL (default: http://localhost:11434)
+  - **Note**: Should point to internal/local Ollama instance, not external APIs
+- `OLLAMA_EMBED_MODEL` - Embedding model (default: nomic-embed-text)
+- `OLLAMA_CHAT_MODEL` - Chat model (default: llama3.1)
+- `ENABLE_MCP` - Enable MCP actions (default: false)
 
-- **express**: Web server framework
-- **zod**: Schema validation library
-
-**Note**: LLM fallback requires Ollama to be running locally. Install from [ollama.ai](https://ollama.ai) and pull a model (e.g., `ollama pull llama3`).
-
-## Extensibility
-
-### Adding New Alert Types
-
-1. Edit `config/policies.json` (copy from `config/policies.json.example` if needed):
-   ```json
-   {
-     "alert_type": "memory_utilization_high",
-     "name": "Memory Utilization High Alert",
-     "patterns": [...],
-     "extraction_rules": {...},
-     "action_template": "...",
-     "summary_template": "...",
-     "sample_texts": [...]
-   }
-   ```
-
-2. The parser engine will automatically pick it up (no code changes needed)
-
-### Customizing Decision Logic
-
-- Modify `src/decision/decide.js` to add policy-specific rules
-- Future: Add `decision_rules` field to policies.json for declarative decision logic
-
-### MCP Server Integration
-
-- Configure MCP server URL and authentication
-- MCP server should implement `execute_action` method
-- Receives action command and parsed alert context
-- Returns execution result
-
+**Data Privacy Note**: All LLM operations use local Ollama. No data is sent to external LLM services (OpenAI, Anthropic, etc.) to ensure internal data privacy and prevent training of public models with your organization's data.

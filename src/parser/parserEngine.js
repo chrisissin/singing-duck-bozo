@@ -106,24 +106,49 @@ function tryPolicyParsing(text) {
   const policies = loadPolicies();
   
   for (const policy of policies) {
-    const extracted = {};
-    let allPatternsMatched = true;
-    
-    // Try to match all patterns in the policy
-    for (const pattern of policy.patterns) {
-      const result = applyPattern(pattern, text);
-      if (result === null) {
-        allPatternsMatched = false;
-        break;
-      }
-      Object.assign(extracted, result);
+    // If policy has no patterns, skip it (it relies on LLM parsing)
+    if (!policy.patterns || policy.patterns.length === 0) {
+      continue;
     }
     
-    if (allPatternsMatched) {
-      // Merge with extraction rules
+    // Special check for add_memory_to_vm: exclude disk/storage issues
+    if (policy.alert_type === "add_memory_to_vm") {
+      // If text mentions disk/storage but NOT memory/ram, skip this policy
+      const hasDiskStorage = /(disk|storage)/i.test(text);
+      const hasMemoryRam = /(memory|ram)/i.test(text);
+      if (hasDiskStorage && !hasMemoryRam) {
+        continue; // Skip - this is about disk, not memory
+      }
+    }
+    
+    const extracted = {};
+    let atLeastOnePatternMatched = false;
+    
+    // Try to match ANY pattern in the policy (OR logic, not AND)
+    // This allows multiple patterns as alternatives
+    for (const pattern of policy.patterns) {
+      const result = applyPattern(pattern, text);
+      if (result !== null) {
+        atLeastOnePatternMatched = true;
+        Object.assign(extracted, result);
+        // Once we find a match, we can break (or continue to collect all matches)
+        // For now, break on first match for efficiency
+        break;
+      }
+    }
+    
+    if (atLeastOnePatternMatched) {
+      // Merge with extraction rules, ensuring all required fields are present
       const parsed = {
         ...policy.extraction_rules,
-        ...extracted
+        ...extracted,
+        // Ensure required fields are present (even if null/undefined in extraction_rules)
+        threshold_percent: extracted.threshold_percent ?? policy.extraction_rules.threshold_percent ?? null,
+        value_percent: extracted.value_percent ?? policy.extraction_rules.value_percent ?? null,
+        metric_labels: extracted.metric_labels ?? policy.extraction_rules.metric_labels ?? {},
+        missing_fields: extracted.missing_fields ?? policy.extraction_rules.missing_fields ?? [],
+        confidence: extracted.confidence ?? policy.extraction_rules.confidence ?? 0.7,
+        parse_method: extracted.parse_method ?? policy.extraction_rules.parse_method ?? "policy"
       };
       
       return {
@@ -202,10 +227,31 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
     }
     
     const parsed = JSON.parse(content);
-    return {
-      parsed: validateParsedAlert(parsed),
-      matched: true
-    };
+    
+    // If alert_type is null, the LLM couldn't identify it as an alert
+    // Treat this as "not matched" so we can fall back to RAG
+    if (parsed.alert_type === null || parsed.alert_type === undefined) {
+      return {
+        matched: false
+      };
+    }
+    
+    // Validate the parsed response
+    try {
+      const validated = validateParsedAlert(parsed);
+      return {
+        parsed: validated,
+        matched: true
+      };
+    } catch (validationError) {
+      // If validation fails, treat it as a retryable error
+      // Log the actual response for debugging
+      console.warn(`Model ${model} returned invalid response:`, JSON.stringify(parsed, null, 2));
+      return { 
+        shouldRetry: true, 
+        error: `Validation failed: ${validationError.message}` 
+      };
+    }
   } catch (fetchError) {
     clearTimeout(timeoutId);
     if (fetchError.name === "AbortError") {
@@ -215,6 +261,13 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
     if (fetchError.message?.includes("EOF")) {
       return { shouldRetry: true, error: fetchError.message };
     }
+    // Check if it's a JSON parse error
+    if (fetchError instanceof SyntaxError) {
+      return { 
+        shouldRetry: true, 
+        error: `Invalid JSON response from ${model}: ${fetchError.message}` 
+      };
+    }
     throw fetchError;
   }
 }
@@ -222,7 +275,7 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
 async function tryLLMParsing(text) {
   // Get Ollama configuration
   const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
-  let primaryModel = process.env.OLLAMA_MODEL || "llama3";
+  let primaryModel = process.env.OLLAMA_MODEL || "llama3.1";
   
   // Ensure model name includes :latest tag if no tag is specified
   if (!primaryModel.includes(":")) {
@@ -245,7 +298,7 @@ async function tryLLMParsing(text) {
     availableModels = modelsData.models?.map(m => m.name) || [];
     
     if (availableModels.length === 0) {
-      return { matched: false, error: "No models available in Ollama. Pull a model first: ollama pull llama3" };
+      return { matched: false, error: "No models available in Ollama. Pull a model first: ollama pull llama3.1" };
     }
   } catch (healthError) {
     if (healthError.name === "AbortError") {
@@ -290,8 +343,59 @@ Return a JSON object with the following structure:
   "gcp_alert_url": "string or null",
   "confidence": 0.7,
   "missing_fields": ["array of missing field names"],
-  "parse_method": "llm"
+  "parse_method": "llm",
+  "user_intent": "string describing the user's intent (if scaling_intent_detected)",
+  "service_name": "string or null (service name like 'api', 'gacha-api', 'login-api' if mentioned or can be inferred)",
+  "schedule_name": "string or null (autoscaler schedule name, can be generated if not specified)",
+  "schedule_expression": "string or null (schedule expression like 's(local.sch_1730_utc) 12 $(local.sch_jan_2026)')",
+  "duration_sec": "string or null (duration variable like 'local.sch_02_hours')",
+  "min_replicas": "string or null (min replicas variable like 'local.sch_moderate_high')",
+  "environment": "string or null (environment like 'qaprod', 'production' if mentioned)",
+  "current_machine_type": "string or null (current machine type like 'c2d-standard-2' if mentioned)",
+  "target_machine_type": "string or null (target machine type like 'c2d-standard-4' if mentioned)"
 }
+
+Special instructions:
+- ONLY set alert_type to "scaling_intent_detected" if the user EXPLICITLY mentions:
+  * Scaling up servers/infrastructure (e.g., "we need to scale up", "add more servers", "increase capacity")
+  * Traffic/load issues requiring more resources (e.g., "we're getting crushed by traffic", "servers are overloaded")
+  * Explicit requests for more compute power (e.g., "we need more power", "spin up more instances")
+- CRITICAL: Set alert_type to "add_memory_to_vm" ONLY if the user EXPLICITLY mentions memory/RAM (NOT disk space):
+  * "add memory to vm" or "add memory to the vm" or "add memory to VM"
+  * "increase vm memory" or "increase memory for vm" or "increase memory on vm"
+  * "upgrade vm memory" or "upgrade memory for vm"
+  * "vm needs more memory" or "vm needs memory" or "vm requires more memory"
+  * "change machine type" combined with "memory" or "more memory" or "RAM"
+  * "upgrade machine type" combined with "memory" or "more memory" or "RAM"
+- DO NOT set add_memory_to_vm for:
+  * Disk space issues (e.g., "disk space out", "out of disk space", "disk space is low")
+  * Storage issues (e.g., "storage full", "disk full")
+  * Any mention of "disk" or "storage" without explicit mention of "memory" or "RAM"
+- The phrase must contain the word "memory" or "RAM" to trigger add_memory_to_vm
+- Even if the user doesn't specify environment or service, still set alert_type to "add_memory_to_vm" and leave those fields as null
+- DO NOT set scaling_intent_detected or add_memory_to_vm for:
+  * General questions about infrastructure
+  * Questions about existing systems
+  * Requests for information or status checks
+  * Performance issues that don't explicitly mention scaling or memory
+  * If the user is just asking "what should I do?" without mentioning scaling or memory
+- If unsure whether it's a scaling or memory request, set alert_type to null (not an alert)
+- For scaling_intent_detected, try to extract service_name from context. If not mentioned, use "api" as default
+- For scaling_intent_detected, set user_intent to a brief description of what the user wants
+- For add_memory_to_vm, CRITICALLY IMPORTANT: Extract ALL mentioned fields from the user's message:
+  * When the user explicitly provides field names like "serviceName", "currentMachineType", "targetMachineType" (camelCase) or "service_name", "current_machine_type", "target_machine_type" (snake_case), extract the VALUE that follows immediately after these keywords
+  * environment: Look for "qaprod", "production", "staging", etc. or infer from service name (e.g., "mcoc-qaprod-mmakerd-drb" contains "qaprod")
+  * service_name: Extract the exact value provided after "serviceName" or "service_name" keyword. If the value is like "mcoc-qaprod-mmakerd-drb", extract it as-is (normalization will happen later)
+  * current_machine_type: Extract the exact value provided after "currentMachineType" or "current_machine_type" keyword (e.g., "c2d-standard-2")
+  * target_machine_type: Extract the exact value provided after "targetMachineType" or "target_machine_type" keyword (e.g., "c2d-standard-4")
+  * The user may provide these in camelCase (serviceName, currentMachineType, targetMachineType) or snake_case (service_name, current_machine_type, target_machine_type) - extract them regardless of format
+  * If the user explicitly provides these values in their message (especially with keywords), you MUST extract them - do not leave them as null
+  * Example 1: "add memory to vm serviceName matchmakerd_drb currentMachineType c2d-standard-2 targetMachineType c2d-standard-4"
+    Should extract: { "environment": "qaprod", "service_name": "matchmakerd_drb", "current_machine_type": "c2d-standard-2", "target_machine_type": "c2d-standard-4" }
+  * Example 2: "how do i add memory to a vm? in gcp project mcoc-preprod serviceName mcoc-qaprod-mmakerd-drb currentMachineType c2d-standard-2 targetMachineType c2d-standard-4"
+    Should extract: { "environment": "qaprod", "service_name": "mcoc-qaprod-mmakerd-drb", "current_machine_type": "c2d-standard-2", "target_machine_type": "c2d-standard-4" }
+  * Pay close attention to the exact text after keywords - extract the complete value, even if it contains dashes or special characters
+- If schedule details or machine type details are not mentioned, you can leave them as null (defaults will be used)
 
 Only return valid JSON, no other text.`;
 
@@ -310,11 +414,21 @@ Only return valid JSON, no other text.`;
     try {
       const result = await tryLLMWithModel(ollamaUrl, model, prompt);
       if (result.matched) {
+        // Try to find matching policy by alert_type
+        const policies = loadPolicies();
+        const matchingPolicy = policies.find(p => p.alert_type === result.parsed.alert_type);
+        
         return {
           parsed: result.parsed,
           matched: true,
-          policy: null, // LLM parsing doesn't have a specific policy
+          policy: matchingPolicy || null,
           modelUsed: model
+        };
+      }
+      // If model determined it's not an alert (alert_type: null), return immediately
+      if (result.matched === false) {
+        return {
+          matched: false
         };
       }
       if (result.shouldRetry) {
@@ -338,15 +452,77 @@ Only return valid JSON, no other text.`;
 }
 
 export async function parseAlert(text) {
+  // Check if detection features are disabled
+  const disableScalingIntent = process.env.DISABLE_SCALING_INTENT_DETECTION === "true";
+  const disableAddMemory = process.env.DISABLE_ADD_MEMORY_DETECTION === "true";
+  
   // First, try policy-based parsing
   const policyResult = tryPolicyParsing(text);
   if (policyResult.matched) {
-    return policyResult;
+    // Skip scaling intent detection if disabled
+    if (disableScalingIntent && policyResult.policy?.alert_type === "scaling_intent_detected") {
+      return { matched: false };
+    }
+    // Skip add memory detection if disabled
+    if (disableAddMemory && policyResult.policy?.alert_type === "add_memory_to_vm") {
+      return { matched: false };
+    }
+    
+    // For certain alert types, check if critical fields are missing and use LLM to extract them
+    const parsed = policyResult.parsed;
+    const alertType = parsed?.alert_type;
+    
+    if (alertType === "add_memory_to_vm") {
+      // Check if critical fields are missing
+      const hasServiceName = parsed?.service_name || parsed?.serviceName;
+      const hasCurrentMachineType = parsed?.current_machine_type || parsed?.currentMachineType;
+      const hasTargetMachineType = parsed?.target_machine_type || parsed?.targetMachineType;
+      
+      if (!hasServiceName || !hasCurrentMachineType || !hasTargetMachineType) {
+        // Fall through to LLM parsing to extract missing fields
+        console.log("Policy matched but missing critical fields for add_memory_to_vm, using LLM to extract...");
+      } else {
+        // All fields present, return policy result
+        return policyResult;
+      }
+    } else if (alertType === "scaling_intent_detected") {
+      // For scaling intent, service_name is helpful but not critical, so we can return policy result
+      return policyResult;
+    } else {
+      // For other alert types, return policy result
+      return policyResult;
+    }
   }
   
-  // If policy parsing fails, try LLM parsing
+  // If policy parsing fails OR policy matched but needs LLM for field extraction, try LLM parsing
   const llmResult = await tryLLMParsing(text);
   if (llmResult.matched) {
+    // Skip scaling intent detection if disabled
+    if (disableScalingIntent && llmResult.parsed?.alert_type === "scaling_intent_detected") {
+      return { matched: false };
+    }
+    // Skip add memory detection if disabled
+    if (disableAddMemory && llmResult.parsed?.alert_type === "add_memory_to_vm") {
+      return { matched: false };
+    }
+    
+    // If we had a policy match but needed LLM for field extraction, merge the results
+    if (policyResult.matched && policyResult.policy) {
+      // Merge policy extraction_rules with LLM-extracted fields
+      const merged = {
+        ...policyResult.policy.extraction_rules,
+        ...llmResult.parsed,
+        // Preserve policy's parse_method or use LLM's
+        parse_method: "llm" // Since we used LLM for extraction
+      };
+      return {
+        parsed: validateParsedAlert(merged),
+        policy: policyResult.policy,
+        matched: true,
+        modelUsed: llmResult.modelUsed
+      };
+    }
+    
     return llmResult;
   }
   
