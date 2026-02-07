@@ -105,8 +105,19 @@ app.event("app_mention", async ({ event, client, logger }) => {
     const hasRagResult = result.rag_result || result.source === "rag_history" || result.source === "both";
     const searchedChannelOnly = event.channel && hasRagResult && event.channel !== "nochannel-web-ui";
 
+    // Guard clause: ensure result.data exists
+    if (!result.data) {
+      // If no data, just send the message without approval buttons
+      await client.chat.postMessage({
+        channel: event.channel,
+        thread_ts: event.ts,
+        text: messageText,
+      });
+      return;
+    }
+    
     // Check if approval is needed
-    const needsApproval = result.data?.decision?.decision === "NEEDS_APPROVAL" && result.data?.action;
+    const needsApproval = result.data.decision?.decision === "NEEDS_APPROVAL" && result.data.action;
     
     // Helper function to check if action is valid (not an error message)
     const isActionValid = (action) => {
@@ -122,7 +133,7 @@ app.event("app_mention", async ({ event, client, logger }) => {
       return !errorPatterns.some(pattern => pattern.test(actionStr));
     };
     
-    const actionIsValid = needsApproval && isActionValid(result.data.action);
+    const actionIsValid = needsApproval && result.data.action && isActionValid(result.data.action);
     const disableApprovalButtons = process.env.DISABLE_APPROVAL_BUTTONS === "true";
     const hasMultipleOptions = result.data.actionOptions && Array.isArray(result.data.actionOptions) && result.data.actionOptions.length > 0;
     
@@ -361,11 +372,12 @@ app.action("approve_action", async ({ ack, body, client, logger }) => {
       if (actionTemplate === "MCP:execute_gcloud_scale_up") {
         // Execute GCP scale-up command
         const { gcloudCommandTemplate } = value;
+        if (!gcloudCommandTemplate) {
+          throw new Error("gcloud_command_template is required in policy");
+        }
         executionResult = await executeGcloudScaleUp({
           serviceName: parsed.service_name || parsed.serviceName || null,
-          projectId: parsed.project_id || parsed.projectId || null,
-          gcloudCommandTemplate: gcloudCommandTemplate || null,
-          parsed: parsed
+          gcloudCommand: gcloudCommandTemplate
         });
         
         // If we got a command, execute it via gcloud

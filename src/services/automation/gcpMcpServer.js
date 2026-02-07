@@ -66,7 +66,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "execute_gcloud_scale_up",
-        description: "Executes a gcloud command to scale up instances. Uses command template from policy if provided, otherwise uses default.",
+        description: "Executes a gcloud command to scale up instances. Uses the exact command from policy.",
         inputSchema: {
           type: "object",
           properties: {
@@ -74,20 +74,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Service name to scale up (optional, used for logging)"
             },
-            projectId: {
+            gcloudCommand: {
               type: "string",
-              description: "GCP project ID (optional, defaults to current project)"
-            },
-            gcloudCommandTemplate: {
-              type: "string",
-              description: "Gcloud command template from policy (e.g., 'gcloud compute instance-groups managed resize {mig_name} --size={target_size} --zone={zone} --project={project_id}')"
-            },
-            parsed: {
-              type: "object",
-              description: "Parsed alert data for template replacement (optional)"
+              description: "The exact gcloud command from policy to execute (no template replacement needed)"
             }
           },
-          required: []
+          required: ["gcloudCommand"]
         }
       },
       {
@@ -268,71 +260,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "execute_gcloud_scale_up") {
     try {
-      const { serviceName, projectId, gcloudCommandTemplate, parsed } = args;
+      const { serviceName, gcloudCommand } = args;
       
-      let gcloudCmd;
-      
-      // Use template from policy if provided
-      if (gcloudCommandTemplate && parsed) {
-        // Replace placeholders in template with values from parsed data
-        gcloudCmd = gcloudCommandTemplate;
-        
-        // Replace common placeholders
-        const replacements = {
-          '{project_id}': parsed.project_id || projectId || '',
-          '{projectId}': parsed.project_id || projectId || '',
-          '{instance_name}': parsed.instance_name || '',
-          '{instanceName}': parsed.instance_name || '',
-          '{service_name}': parsed.service_name || serviceName || '',
-          '{serviceName}': parsed.service_name || serviceName || '',
-          '{mig_name}': parsed.mig_name || '',
-          '{migName}': parsed.mig_name || '',
-          '{zone}': parsed.zone || '',
-          '{target_size}': parsed.target_size || '10',
-          '{targetSize}': parsed.target_size || '10',
-          '{min_replicas}': parsed.min_replicas || '2',
-          '{minReplicas}': parsed.min_replicas || '2',
-          '{max_replicas}': parsed.max_replicas || '10',
-          '{maxReplicas}': parsed.max_replicas || '10'
-        };
-        
-        // Replace all placeholders
-        for (const [placeholder, value] of Object.entries(replacements)) {
-          gcloudCmd = gcloudCmd.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), value);
-        }
-        
-        // Also try direct property access from parsed object
-        for (const [key, value] of Object.entries(parsed)) {
-          if (value !== null && value !== undefined) {
-            gcloudCmd = gcloudCmd.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value));
-          }
-        }
-      } else {
-        // Fallback to default hardcoded command if no template provided
-        gcloudCmd = projectId 
-          ? `gcloud compute instance-groups managed resize YOUR_MIG_NAME --size=10 --zone=us-central1-a --project=${projectId}`
-          : `gcloud compute instance-groups managed resize YOUR_MIG_NAME --size=10 --zone=us-central1-a`;
-      }
-      
-      console.log(`[MCP Server] Executing scale-up command for service: ${serviceName || 'unknown'}`);
-      console.log(`[MCP Server] Command: ${gcloudCmd}`);
-      
-      // Check if command still has unresolved placeholders
-      const hasPlaceholders = /\{[^}]+\}/.test(gcloudCmd);
-      if (hasPlaceholders) {
+      if (!gcloudCommand || !gcloudCommand.trim()) {
         return {
           content: [{ 
             type: "text", 
             text: JSON.stringify({ 
-              success: false,
-              command: gcloudCmd,
-              error: "Command template has unresolved placeholders. Please provide required values in the parsed data.",
-              message: "Missing required parameters for scale-up command"
+              error: "gcloud command is required"
             }) 
           }],
           isError: true
         };
       }
+      
+      // Use the command directly from policy (no template replacement)
+      const gcloudCmd = gcloudCommand.trim();
+      
+      console.log(`[MCP Server] Executing scale-up command for service: ${serviceName || 'unknown'}`);
+      console.log(`[MCP Server] Command: ${gcloudCmd}`);
       
       // For now, return the command that would be executed
       // Uncomment the execAsync call below when you're ready to execute
@@ -349,8 +295,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text: JSON.stringify({ 
             success: true, 
             command: gcloudCmd,
-            message: `Scale-up command prepared and ready to execute.`,
-            note: gcloudCommandTemplate ? "Command generated from policy template" : "Using default command template"
+            message: `Scale-up command prepared and ready to execute.`
           }) 
         }]
       };

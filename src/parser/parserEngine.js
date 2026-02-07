@@ -111,15 +111,6 @@ function tryPolicyParsing(text) {
       continue;
     }
     
-    // Special check for add_memory_to_vm: exclude disk/storage issues
-    if (policy.alert_type === "add_memory_to_vm") {
-      // If text mentions disk/storage but NOT memory/ram, skip this policy
-      const hasDiskStorage = /(disk|storage)/i.test(text);
-      const hasMemoryRam = /(memory|ram)/i.test(text);
-      if (hasDiskStorage && !hasMemoryRam) {
-        continue; // Skip - this is about disk, not memory
-      }
-    }
     
     const extracted = {};
     let atLeastOnePatternMatched = false;
@@ -350,9 +341,9 @@ Return a JSON object with the following structure:
   "schedule_expression": "string or null (schedule expression like 's(local.sch_1730_utc) 12 $(local.sch_jan_2026)')",
   "duration_sec": "string or null (duration variable like 'local.sch_02_hours')",
   "min_replicas": "string or null (min replicas variable like 'local.sch_moderate_high')",
-  "environment": "string or null (environment like 'qaprod', 'production' if mentioned)",
-  "current_machine_type": "string or null (current machine type like 'c2d-standard-2' if mentioned)",
-  "target_machine_type": "string or null (target machine type like 'c2d-standard-4' if mentioned)"
+  "mig_name": "string or null (managed instance group name if mentioned)",
+  "region": "string or null (GCP region like 'us-central1' if mentioned)",
+
 }
 
 Special instructions:
@@ -360,42 +351,17 @@ Special instructions:
   * Scaling up servers/infrastructure (e.g., "we need to scale up", "add more servers", "increase capacity")
   * Traffic/load issues requiring more resources (e.g., "we're getting crushed by traffic", "servers are overloaded")
   * Explicit requests for more compute power (e.g., "we need more power", "spin up more instances")
-- CRITICAL: Set alert_type to "add_memory_to_vm" ONLY if the user EXPLICITLY mentions memory/RAM (NOT disk space):
-  * "add memory to vm" or "add memory to the vm" or "add memory to VM"
-  * "increase vm memory" or "increase memory for vm" or "increase memory on vm"
-  * "upgrade vm memory" or "upgrade memory for vm"
-  * "vm needs more memory" or "vm needs memory" or "vm requires more memory"
-  * "change machine type" combined with "memory" or "more memory" or "RAM"
-  * "upgrade machine type" combined with "memory" or "more memory" or "RAM"
-- DO NOT set add_memory_to_vm for:
-  * Disk space issues (e.g., "disk space out", "out of disk space", "disk space is low")
-  * Storage issues (e.g., "storage full", "disk full")
-  * Any mention of "disk" or "storage" without explicit mention of "memory" or "RAM"
-- The phrase must contain the word "memory" or "RAM" to trigger add_memory_to_vm
-- Even if the user doesn't specify environment or service, still set alert_type to "add_memory_to_vm" and leave those fields as null
-- DO NOT set scaling_intent_detected or add_memory_to_vm for:
+- DO NOT set scaling_intent_detected for:
   * General questions about infrastructure
   * Questions about existing systems
   * Requests for information or status checks
   * Performance issues that don't explicitly mention scaling or memory
   * If the user is just asking "what should I do?" without mentioning scaling or memory
-- If unsure whether it's a scaling or memory request, set alert_type to null (not an alert)
+- If unsure whether it's a scaling request, set alert_type to null (not an alert)
 - For scaling_intent_detected, try to extract service_name from context. If not mentioned, use "api" as default
 - For scaling_intent_detected, set user_intent to a brief description of what the user wants
-- For add_memory_to_vm, CRITICALLY IMPORTANT: Extract ALL mentioned fields from the user's message:
-  * When the user explicitly provides field names like "serviceName", "currentMachineType", "targetMachineType" (camelCase) or "service_name", "current_machine_type", "target_machine_type" (snake_case), extract the VALUE that follows immediately after these keywords
-  * environment: Look for "qaprod", "production", "staging", etc. or infer from service name (e.g., "mcoc-qaprod-mmakerd-drb" contains "qaprod")
-  * service_name: Extract the exact value provided after "serviceName" or "service_name" keyword. If the value is like "mcoc-qaprod-mmakerd-drb", extract it as-is (normalization will happen later)
-  * current_machine_type: Extract the exact value provided after "currentMachineType" or "current_machine_type" keyword (e.g., "c2d-standard-2")
-  * target_machine_type: Extract the exact value provided after "targetMachineType" or "target_machine_type" keyword (e.g., "c2d-standard-4")
-  * The user may provide these in camelCase (serviceName, currentMachineType, targetMachineType) or snake_case (service_name, current_machine_type, target_machine_type) - extract them regardless of format
-  * If the user explicitly provides these values in their message (especially with keywords), you MUST extract them - do not leave them as null
-  * Example 1: "add memory to vm serviceName matchmakerd_drb currentMachineType c2d-standard-2 targetMachineType c2d-standard-4"
-    Should extract: { "environment": "qaprod", "service_name": "matchmakerd_drb", "current_machine_type": "c2d-standard-2", "target_machine_type": "c2d-standard-4" }
-  * Example 2: "how do i add memory to a vm? in gcp project mcoc-preprod serviceName mcoc-qaprod-mmakerd-drb currentMachineType c2d-standard-2 targetMachineType c2d-standard-4"
-    Should extract: { "environment": "qaprod", "service_name": "mcoc-qaprod-mmakerd-drb", "current_machine_type": "c2d-standard-2", "target_machine_type": "c2d-standard-4" }
-  * Pay close attention to the exact text after keywords - extract the complete value, even if it contains dashes or special characters
-- If schedule details or machine type details are not mentioned, you can leave them as null (defaults will be used)
+- For cpu_utilization_high and game_performance_issue, extract mig_name and region if mentioned (required for action execution)
+- If schedule details are not mentioned, you can leave them as null (defaults will be used)
 
 Only return valid JSON, no other text.`;
 
@@ -454,7 +420,6 @@ Only return valid JSON, no other text.`;
 export async function parseAlert(text) {
   // Check if detection features are disabled
   const disableScalingIntent = process.env.DISABLE_SCALING_INTENT_DETECTION === "true";
-  const disableAddMemory = process.env.DISABLE_ADD_MEMORY_DETECTION === "true";
   
   // First, try policy-based parsing
   const policyResult = tryPolicyParsing(text);
@@ -463,8 +428,8 @@ export async function parseAlert(text) {
     if (disableScalingIntent && policyResult.policy?.alert_type === "scaling_intent_detected") {
       return { matched: false };
     }
-    // Skip add memory detection if disabled
-    if (disableAddMemory && policyResult.policy?.alert_type === "add_memory_to_vm") {
+    // Skip add_memory_to_vm (not supported)
+    if (policyResult.policy?.alert_type === "add_memory_to_vm") {
       return { matched: false };
     }
     
@@ -472,15 +437,14 @@ export async function parseAlert(text) {
     const parsed = policyResult.parsed;
     const alertType = parsed?.alert_type;
     
-    if (alertType === "add_memory_to_vm") {
-      // Check if critical fields are missing
-      const hasServiceName = parsed?.service_name || parsed?.serviceName;
-      const hasCurrentMachineType = parsed?.current_machine_type || parsed?.currentMachineType;
-      const hasTargetMachineType = parsed?.target_machine_type || parsed?.targetMachineType;
+    if (alertType === "cpu_utilization_high" || alertType === "game_performance_issue") {
+      // Check if critical fields are missing (mig_name and region needed for action execution)
+      const hasMigName = parsed?.mig_name || parsed?.migName;
+      const hasRegion = parsed?.region;
       
-      if (!hasServiceName || !hasCurrentMachineType || !hasTargetMachineType) {
+      if (!hasMigName || !hasRegion) {
         // Fall through to LLM parsing to extract missing fields
-        console.log("Policy matched but missing critical fields for add_memory_to_vm, using LLM to extract...");
+        console.log(`Policy matched but missing critical fields (mig_name, region) for ${alertType}, using LLM to extract...`);
       } else {
         // All fields present, return policy result
         return policyResult;
@@ -501,8 +465,8 @@ export async function parseAlert(text) {
     if (disableScalingIntent && llmResult.parsed?.alert_type === "scaling_intent_detected") {
       return { matched: false };
     }
-    // Skip add memory detection if disabled
-    if (disableAddMemory && llmResult.parsed?.alert_type === "add_memory_to_vm") {
+    // Skip add_memory_to_vm (not supported)
+    if (llmResult.parsed?.alert_type === "add_memory_to_vm") {
       return { matched: false };
     }
     

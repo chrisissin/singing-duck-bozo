@@ -206,15 +206,17 @@ export async function executeMCPGcloudCommand(gcloudCommand) {
  * 
  * @param {Object} params - Parameters for scale-up
  * @param {string} params.serviceName - Service name (optional, for logging)
- * @param {string} params.projectId - GCP project ID (optional)
- * @param {string} params.gcloudCommandTemplate - Gcloud command template from policy (optional)
- * @param {Object} params.parsed - Parsed alert data for template replacement (optional)
+ * @param {string} params.gcloudCommand - The exact gcloud command from policy to execute
  * @returns {Promise<Object>} - Result with command and execution status
  */
 export async function executeGcloudScaleUp(params) {
   // Check if MCP is enabled
   if (process.env.ENABLE_MCP !== "true") {
     throw new Error("MCP is not enabled. Set ENABLE_MCP=true to enable.");
+  }
+
+  if (!params.gcloudCommand || !params.gcloudCommand.trim()) {
+    throw new Error("gcloud command is required");
   }
 
   try {
@@ -225,9 +227,7 @@ export async function executeGcloudScaleUp(params) {
       name: "execute_gcloud_scale_up",
       arguments: {
         serviceName: params.serviceName || null,
-        projectId: params.projectId || null,
-        gcloudCommandTemplate: params.gcloudCommandTemplate || null,
-        parsed: params.parsed || null
+        gcloudCommand: params.gcloudCommand.trim()
       }
     });
 

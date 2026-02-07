@@ -15,18 +15,20 @@ async function formatActionTemplate(template, parsed, originalText = null, isGit
     }
     
     if (mcpTool === "execute_gcloud_scale_up") {
-      // For GCP command scale-up, return the command that will be executed
+      // For GCP command scale-up, use the command directly from policy
       const { executeGcloudScaleUp } = await import("./mcpClient.js");
       try {
-        // Pass the gcloud command template from the policy
+        if (!gcloudCommandTemplate) {
+          return `*GCP Scale-Up Command:*\n\n❌ No gcloud command template found in policy. Please add \`gcloud_command_template\` to the action template.`;
+        }
+        
+        // Pass the exact command from policy (no template replacement)
         const result = await executeGcloudScaleUp({
           serviceName: parsed.service_name || parsed.serviceName || null,
-          projectId: parsed.project_id || parsed.projectId || null,
-          gcloudCommandTemplate: gcloudCommandTemplate,
-          parsed: parsed // Pass full parsed data for template replacement
+          gcloudCommand: gcloudCommandTemplate
         });
         if (result.success) {
-          return `*GCP Scale-Up Command:*\n\`\`\`\n${result.command || 'gcloud scale-up command'}\n\`\`\`\n\n${result.message || 'Ready to execute'}`;
+          return `*GCP Scale-Up Command:*\n\`\`\`\n${result.command || gcloudCommandTemplate}\n\`\`\`\n\n${result.message || 'Ready to execute'}`;
         } else {
           return `Failed to prepare scale-up command: ${result.error || "Unknown error"}`;
         }
