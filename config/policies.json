@@ -32,20 +32,8 @@
         "missing_fields": ["zone", "mig_name"],
         "parse_method": "policy"
       },
-      
-      "action_template": "gcloud compute ssh {instance_name}  --project={project_id} --internal-ip --command='sudo du -hd2 / | sort -rh | head -n 10' ",
-      "summary_template": "Disk utilization below threshold. Please take following actions to see what's taking up space for example :\n\n$ sudo du -hd2 / | sort -rh | head -n 10\n27G\t/var\n25G\t/var/log <-- This is the issue\n\n{action}",
-      "default_decision": "AUTO_REPLACE",
-      "decision_rules": [
-        {
-          "condition": {
-            "instance_name": {
-              "startsWith": "mcoc-production-timerd"
-            }
-          },
-          "decision": "NEEDS_APPROVAL"
-        }
-      ],
+      "action_template": "gcloud compute instance-groups managed recreate-instances <MIG> --instances={instance_name} --zone=<ZONE> --project={project_id}",
+      "summary_template": "Disk utilization below threshold. {action}",
       "sample_texts": [
         "Disk utilization for project-123 instance-456 threshold of 80.0 with a value of 65.5"
       ]
@@ -82,53 +70,10 @@
         "missing_fields": ["zone"],
         "parse_method": "policy"
       },
-      "action_template": "gcloud compute instance-groups managed set-autoscaling {instance_name} --min-num-replicas=2 --max-num-replicas=10 --zone=<ZONE> --project={project_id}",
-      "summary_template": "CPU utilization above threshold. Scaling up managed instance group minimum instances. {action}",
-      "default_decision": "AUTO_REPLACE",
-      "decision_rules": [
-        {
-          "condition": {
-            "instance_name": {
-              "startsWith": "mcoc-production-timerd"
-            }
-          },
-          "decision": "NEEDS_APPROVAL"
-        }
-      ],
+      "action_template": "gcloud compute instances stop {instance_name} --zone=<ZONE> --project={project_id}",
+      "summary_template": "CPU utilization above threshold. {action}",
       "sample_texts": [
         "CPU utilization for project-123 instance-456 CPU usage 95.5% exceeds threshold 80.0%"
-      ]
-    },
-    {
-      "alert_type": "game_performance_issue",
-      "name": "Game Performance Issue",
-      "patterns": [
-        {
-          "type": "regex",
-          "pattern": "game is slow",
-          "capture_groups": {}
-        }
-      ],
-      "extraction_rules": {
-        "alert_type": "game_performance_issue",
-        "project_id": null,
-        "instance_name": null,
-        "metric_labels": {},
-        "threshold_percent": null,
-        "value_percent": null,
-        "policy_name": null,
-        "condition_name": null,
-        "violation_started_raw": null,
-        "gcp_alert_url": null,
-        "confidence": 0.8,
-        "missing_fields": ["project_id", "instance_name", "zone"],
-        "parse_method": "policy"
-      },
-      "action_template": "gcloud compute instance-groups managed set-autoscaling <MIG_NAME> --min-num-replicas=2 --max-num-replicas=10 --zone=<ZONE> --project=<PROJECT_ID>",
-      "summary_template": "Game performance issue detected (game is slow). Scaling up managed instance group to improve performance. {action}",
-      "default_decision": "NEEDS_APPROVAL",
-      "sample_texts": [
-        "game is slow"
       ]
     }
   ]

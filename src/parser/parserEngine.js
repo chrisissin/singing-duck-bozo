@@ -202,31 +202,10 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
     }
     
     const parsed = JSON.parse(content);
-    
-    // If alert_type is null, the LLM couldn't identify it as an alert
-    // Treat this as "not matched" so we can fall back to RAG
-    if (parsed.alert_type === null || parsed.alert_type === undefined) {
-      return {
-        matched: false
-      };
-    }
-    
-    // Validate the parsed response
-    try {
-      const validated = validateParsedAlert(parsed);
-      return {
-        parsed: validated,
-        matched: true
-      };
-    } catch (validationError) {
-      // If validation fails, treat it as a retryable error
-      // Log the actual response for debugging
-      console.warn(`Model ${model} returned invalid response:`, JSON.stringify(parsed, null, 2));
-      return { 
-        shouldRetry: true, 
-        error: `Validation failed: ${validationError.message}` 
-      };
-    }
+    return {
+      parsed: validateParsedAlert(parsed),
+      matched: true
+    };
   } catch (fetchError) {
     clearTimeout(timeoutId);
     if (fetchError.name === "AbortError") {
@@ -236,13 +215,6 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
     if (fetchError.message?.includes("EOF")) {
       return { shouldRetry: true, error: fetchError.message };
     }
-    // Check if it's a JSON parse error
-    if (fetchError instanceof SyntaxError) {
-      return { 
-        shouldRetry: true, 
-        error: `Invalid JSON response from ${model}: ${fetchError.message}` 
-      };
-    }
     throw fetchError;
   }
 }
@@ -250,7 +222,7 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
 async function tryLLMParsing(text) {
   // Get Ollama configuration
   const ollamaUrl = process.env.OLLAMA_URL || "http://localhost:11434";
-  let primaryModel = process.env.OLLAMA_MODEL || "llama3.1";
+  let primaryModel = process.env.OLLAMA_MODEL || "llama3";
   
   // Ensure model name includes :latest tag if no tag is specified
   if (!primaryModel.includes(":")) {
@@ -273,7 +245,7 @@ async function tryLLMParsing(text) {
     availableModels = modelsData.models?.map(m => m.name) || [];
     
     if (availableModels.length === 0) {
-      return { matched: false, error: "No models available in Ollama. Pull a model first: ollama pull llama3.1" };
+      return { matched: false, error: "No models available in Ollama. Pull a model first: ollama pull llama3" };
     }
   } catch (healthError) {
     if (healthError.name === "AbortError") {
@@ -343,12 +315,6 @@ Only return valid JSON, no other text.`;
           matched: true,
           policy: null, // LLM parsing doesn't have a specific policy
           modelUsed: model
-        };
-      }
-      // If model determined it's not an alert (alert_type: null), return immediately
-      if (result.matched === false) {
-        return {
-          matched: false
         };
       }
       if (result.shouldRetry) {
