@@ -9,7 +9,7 @@ set -e
 
 PROJECT_ID="${GCP_PROJECT_ID:-${1:-singing-duck}}"
 PROJECT_NAME="${GCP_PROJECT_NAME:-Singing Duck}"
-BILLING_ACCOUNT_ID="${BILLING_ACCOUNT_ID:-013722-461E31-603AC1}"
+BILLING_ACCOUNT_ID="${BILLING_ACCOUNT_ID:-000000-000000-000000}"
 TF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "=== Create project and apply Terraform ==="
