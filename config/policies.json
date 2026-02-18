@@ -40,7 +40,7 @@
         {
           "condition": {
             "instance_name": {
-              "startsWith": "mcoc-production-timerd"
+              "startsWith": "some_intsance_name"
             }
           },
           "decision": "NEEDS_APPROVAL"
