@@ -126,17 +126,33 @@ app.event("app_mention", async ({ event, client, logger }) => {
       messageText = `*Policy Engine Result:*\n${result.policy_result.text}\n\n*Additional Context from Slack History:*\n${result.rag_result.text}`;
     }
 
-    // Check if we should offer to search all channels (if RAG was used and we searched only this channel)
-    const hasRagResult = result.rag_result || result.source === "rag_history" || result.source === "both";
-    const searchedChannelOnly = event.channel && hasRagResult && event.channel !== "nochannel-web-ui";
+    // Show "Search All Channels" when user asked from a Slack channel (we search channel first, they can expand)
+    const searchedChannelOnly = event.channel && event.channel !== "nochannel-web-ui";
 
-    // Guard clause: ensure result.data exists
+    // Guard clause: when no result.data (RAG-only or no match), send message and optionally add Search All Channels
     if (!result.data) {
-      // If no data, just send the message without approval buttons
+      const blocks = [{ type: "section", text: { type: "mrkdwn", text: messageText } }];
+      if (searchedChannelOnly) {
+        blocks.push({
+          type: "actions",
+          elements: [{
+            type: "button",
+            text: { type: "plain_text", text: "🔍 Search All Channels" },
+            style: "primary",
+            value: JSON.stringify({
+              original_text: cleanText,
+              original_message_ts: event.ts,
+              searched_channel: event.channel
+            }),
+            action_id: "search_all_channels"
+          }]
+        });
+      }
       await client.chat.postMessage({
         channel: event.channel,
         thread_ts: event.ts,
         text: messageText,
+        blocks: blocks.length > 1 ? blocks : undefined
       });
       return;
     }
@@ -244,6 +260,8 @@ app.event("app_mention", async ({ event, client, logger }) => {
                     actionTemplate: option.template,
                     actionLabel: option.label,
                     gcloudCommandTemplate: option.gcloudCommandTemplate || null,
+                    githubOwner: option.githubOwner ?? result.data.policy?.github_owner ?? null,
+                    githubRepo: option.githubRepo ?? result.data.policy?.github_repo ?? null,
                     parsed: result.data.parsed,
                     decision: result.data.decision,
                     message_ts: event.ts,
@@ -305,6 +323,8 @@ app.event("app_mention", async ({ event, client, logger }) => {
                   actionTemplate: result.data.policy?.action_template || null,
                   actionLabel: "Execute Action",
                   gcloudCommandTemplate: result.data.policy?.gcloud_command_template || null,
+                  githubOwner: result.data.policy?.github_owner || null,
+                  githubRepo: result.data.policy?.github_repo || null,
                   parsed: result.data.parsed,
                   decision: result.data.decision,
                   message_ts: event.ts
@@ -459,7 +479,7 @@ app.action("approve_action", async ({ ack, body, client, logger }) => {
   
   try {
     const value = JSON.parse(body.actions[0].value);
-    const { action, actionTemplate, actionLabel, parsed, decision } = value;
+    const { action, actionTemplate, actionLabel, parsed, decision, githubOwner, githubRepo } = value;
     
     // Debug: Log action template for troubleshooting
     if (!actionTemplate) {
@@ -508,15 +528,19 @@ app.action("approve_action", async ({ ack, body, client, logger }) => {
         });
         return; // Exit early since we've handled it
       }
-      else if (actionTemplate === "MCP:generate_scaling_schedule_yaml_diff") {
-        // Execute the scaling schedule script
-        const { generateScalingScheduleYamlDiff } = await import("./report/mcpClient.js");
-        
-        // Extract parameters from parsed data
+      // else if (actionTemplate === "MCP:generate_scaling_schedule_yaml_diff") {
+      //   // Execute the scaling schedule script (bash)
+      //   const { generateScalingScheduleYamlDiff } = await import("./report/mcpClient.js");
+      //   ...
+      // }
+      else if (actionTemplate === "MCP:create_scaling_schedule_pr") {
+        // Create PR via GitHub API
+        const { createScalingSchedulePR } = await import("./report/mcpClient.js");
+
         const schedule = parsed.schedule || parsed.start || null;
         const duration = parsed.duration || parsed.duration_sec || null;
         const ticketNumber = parsed.ticket_number || parsed.name || parsed.schedule_name || null;
-        
+
         if (!schedule || !duration || !ticketNumber) {
           await client.chat.update({
             channel: body.channel.id,
@@ -534,13 +558,36 @@ app.action("approve_action", async ({ ack, body, client, logger }) => {
           });
           return;
         }
-        
+
+        if (!githubOwner || !githubRepo) {
+          await client.chat.update({
+            channel: body.channel.id,
+            ts: body.message.ts,
+            text: body.message.text,
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `❌ *Execution Failed*\n\nPolicy must include github_owner and github_repo`
+                }
+              }
+            ]
+          });
+          return;
+        }
+
         try {
-          executionResult = await generateScalingScheduleYamlDiff({
+          executionResult = await createScalingSchedulePR({
             schedule,
             duration: parseInt(duration, 10),
-            name: ticketNumber
+            name: ticketNumber,
+            owner: githubOwner,
+            repo: githubRepo
           });
+          if (executionResult.success && executionResult.prUrl) {
+            executionResult.output = `PR created: ${executionResult.prUrl}`;
+          }
         } catch (error) {
           executionResult = {
             success: false,

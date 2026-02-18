@@ -22,7 +22,7 @@ export async function ensureSecrets() {
     ["SLACK_SIGNING_SECRET", "slack-signing-secret"],
   ];
   const isCloudRun = !!(process.env.K_SERVICE || process.env.CLOUD_RUN_JOB);
-  console.log("[ensureSecrets] Fetching from Secret Manager, project:", projectId, "cloudRun:", isCloudRun);
+  //console.log("[ensureSecrets] Fetching from Secret Manager, project:", projectId, "cloudRun:", isCloudRun);
   for (const [envVar, secretId] of secrets) {
     const current = process.env[envVar];
     debugStatus(envVar, current);

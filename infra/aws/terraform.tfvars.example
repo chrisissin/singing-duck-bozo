@@ -1,0 +1,16 @@
+# Example Terraform variables for AWS deployment
+# Copy to terraform.tfvars and adjust
+
+region = "us-east-1"
+
+# RDS
+db_instance_class = "db.t3.micro"
+
+# Indexer schedule (EventBridge)
+# Examples: "rate(30 minutes)", "cron(0 * * * ? *)" (every hour)
+indexer_schedule = "rate(30 minutes)"
+
+# Ollama
+create_ollama_service = true
+ollama_cpu           = 4096  # 4 vCPU
+ollama_memory        = 8192  # 8 GB

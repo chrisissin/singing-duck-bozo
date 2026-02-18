@@ -262,6 +262,9 @@ SYNC_INTERVAL_SECONDS=300  # For sync:cron, seconds between syncs
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
 OLLAMA_CHAT_MODEL=llama3.1
+# If you get 429 Rate exceeded with local Ollama, increase concurrency (restart Ollama after):
+# OLLAMA_NUM_PARALLEL=4
+# OLLAMA_MAX_LOADED_MODELS=2
 
 # Optional: Indexing configuration
 HISTORY_PAGE_LIMIT=200           # Messages per API call
@@ -306,6 +309,7 @@ Before the bot can answer questions, you need to index (fetch and store) chat hi
    ollama pull nomic-embed-text
    ollama pull llama3.1
    ```
+   **Tip:** If you see "429 Rate exceeded", Ollama defaults to 1 parallel request. Set `OLLAMA_NUM_PARALLEL=4` and `OLLAMA_MAX_LOADED_MODELS=2` (for embedding + chat models), then restart Ollama.
 
 2. **Database must be set up** (see Setup section above):
    - Postgres container running: `docker compose up -d`
@@ -476,6 +480,27 @@ You can expand to resolve:
 ---
 
 ## Troubleshooting
+
+### "429 Rate exceeded" with local Ollama
+
+Ollama defaults to `OLLAMA_NUM_PARALLEL=1` (one request at a time). A single RAG query uses 2 models: embedding + chat. If both run close together, the second gets 429.
+
+**Fix:** Set these env vars before starting Ollama, then restart:
+
+```bash
+export OLLAMA_NUM_PARALLEL=4
+export OLLAMA_MAX_LOADED_MODELS=2
+ollama serve
+```
+
+Or run: `OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2 ollama serve`
+
+If Ollama runs as a service (e.g. on macOS), add to its environment (e.g. `~/.zshrc` or LaunchAgent plist):
+
+```
+OLLAMA_NUM_PARALLEL=4
+OLLAMA_MAX_LOADED_MODELS=2
+```
 
 ### Installation Error: "internal_error" when installing app
 

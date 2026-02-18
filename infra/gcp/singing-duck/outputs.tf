@@ -35,6 +35,6 @@ output "next_steps" {
     "3. Enable pgvector: ./scripts/enable-pgvector.sh",
     "4. Build and deploy: ./infra/gcp/singing-duck/scripts/deploy.sh",
     "5. Configure Slack app Event Subscriptions Request URL: ${google_cloud_run_v2_service.agent.uri}slack/events"
-  ], var.create_ollama_service ? ["6. Pull models on Ollama: ./scripts/pull-ollama-models.sh"] : []))
+  ], var.create_ollama_service ? ["6. Models are pulled automatically during deploy.sh (or run ./scripts/pull-ollama-models.sh manually)"] : []))
   description = "Post-apply steps"
 }

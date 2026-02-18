@@ -43,5 +43,15 @@ if [[ -n "$OLLAMA_URL" ]]; then
     --project "$PROJECT_ID"
 fi
 
+# Pull Ollama models after deploy (Cloud Run has ephemeral storage; models are lost on new revisions)
+if [[ -n "$OLLAMA_URL" && "${SKIP_OLLAMA_PULL:-}" != "1" ]]; then
+  echo ""
+  echo "Pulling Ollama models (nomic-embed-text, tinyllama)..."
+  "$SCRIPT_DIR/pull-ollama-models.sh" || {
+    echo "Warning: Ollama model pull failed or timed out. Run manually: $SCRIPT_DIR/pull-ollama-models.sh"
+  }
+fi
+
+echo ""
 echo "Done. Agent URL:"
 gcloud run services describe slack-rag-bot --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)'

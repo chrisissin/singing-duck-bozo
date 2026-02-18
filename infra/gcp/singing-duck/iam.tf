@@ -28,6 +28,12 @@ resource "google_secret_manager_secret_iam_member" "agent_database_url" {
   member     = "serviceAccount:${google_service_account.agent.email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "agent_github_token" {
+  secret_id  = google_secret_manager_secret.github_token.id
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.agent.email}"
+}
+
 # Indexer job: access secrets for ensureSecrets fallback (fetches all if env not set)
 resource "google_secret_manager_secret_iam_member" "indexer_slack_bot_token" {
   secret_id  = google_secret_manager_secret.slack_bot_token.id

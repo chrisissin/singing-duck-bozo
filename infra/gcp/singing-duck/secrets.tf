@@ -39,7 +39,22 @@ resource "google_secret_manager_secret" "database_url" {
 
 resource "google_secret_manager_secret_version" "database_url" {
   secret      = google_secret_manager_secret.database_url.id
-  secret_data = "postgresql://${var.db_user}:${urlencode(random_password.db_password.result)}@${google_sql_database_instance.main.private_ip_address}:5432/${var.db_name}?sslmode=disable"
+  secret_data = "postgresql://${var.db_user}:${urlencode(random_password.db_password.result)}@${google_sql_database_instance.main.private_ip_address}:5432/${var.db_name}?sslmode=require"
+}
+
+# GitHub token for create_scaling_schedule_pr (MCP tool)
+resource "google_secret_manager_secret" "github_token" {
+  secret_id = "github-token"
+  depends_on = [google_project_service.secretmanager]
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "github_token_placeholder" {
+  secret      = google_secret_manager_secret.github_token.id
+  secret_data = "replace-me-with-real-github-token"
 }
 
 # Postgres superuser password (for enable-pgvector.sh; postgres can CREATE EXTENSION)

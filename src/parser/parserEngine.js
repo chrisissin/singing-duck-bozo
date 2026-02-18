@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join, resolve } from "path";
 import { validateParsedAlert } from "./schema.js";
+import { fetchWithRetry } from "../rag/ollama.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -155,10 +156,11 @@ function tryPolicyParsing(text) {
 
 async function tryLLMWithModel(ollamaUrl, model, prompt) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+  const timeoutSec = parseInt(process.env.OLLAMA_PARSER_TIMEOUT_SEC || "60", 10);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSec * 1000);
   
   try {
-    const response = await fetch(`${ollamaUrl}/api/chat`, {
+    const response = await fetchWithRetry(`${ollamaUrl}/api/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -255,7 +257,7 @@ async function tryLLMWithModel(ollamaUrl, model, prompt) {
     // Check if it's a JSON parse error
     if (fetchError instanceof SyntaxError) {
       return { 
-        shouldRetry: true, 
+        matched: false,
         error: `Invalid JSON response from ${model}: ${fetchError.message}` 
       };
     }

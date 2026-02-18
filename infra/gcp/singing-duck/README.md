@@ -23,6 +23,10 @@ Project name: **singing-duck** (configurable via `project_id`).
 - **gcloud** CLI installed and logged in (`gcloud auth login`)
 - **Application Default Credentials** for Terraform: `gcloud auth application-default login`
 - **Terraform** >= 1.0
+- **psql** (PostgreSQL client) — required for `enable-pgvector.sh`:
+  ```bash
+  brew install libpq && export PATH="$(brew --prefix libpq)/bin:$PATH"
+  ```
 - A **GCP project** (e.g. `singing-duck`) with **billing enabled**
 - Your account must have **Owner** or **Editor** on the project (or roles: `compute.networkViewer`, `run.admin`, `secretmanager.admin`, etc.)
 
@@ -101,6 +105,7 @@ Or with gcloud directly:
 ```bash
 echo -n "xoxb-..." | gcloud secrets versions add slack-bot-token --data-file=- --project=singing-duck
 echo -n "..." | gcloud secrets versions add slack-signing-secret --data-file=- --project=singing-duck
+echo -n "ghp_..." | gcloud secrets versions add github-token --data-file=- --project=singing-duck
 ```
 
 ## 4. Enable pgvector and Create Schema
@@ -130,6 +135,7 @@ This will:
 1. Build the Docker image via Cloud Build and push to `gcr.io/singing-duck/slack-rag-bot`
 2. Update the Cloud Run service **slack-rag-bot** with the new image
 3. Update the Cloud Run job **slack-rag-indexer** with the new image
+4. Pull Ollama models (nomic-embed-text, tinyllama) when `create_ollama_service = true` — Cloud Run has ephemeral storage, so models are pulled after each deploy. Use `SKIP_OLLAMA_PULL=1` to skip if models are already loaded.
 
 ## 6. Configure Slack App
 
@@ -145,11 +151,10 @@ This will:
 
 ## 7. Ollama — Pull Models (Required for RAG)
 
-When **`create_ollama_service = true`** (default), Terraform creates a Cloud Run service **ollama** and sets the agent’s `OLLAMA_BASE_URL` to it. The image is `ollama/ollama`; you can tune CPU/memory via `ollama_cpu` and `ollama_memory` in `terraform.tfvars`. **Pull both models** (required; first pull may take several minutes). Without this, RAG/Query will fail with `model "nomic-embed-text" not found`:
+When **`create_ollama_service = true`** (default), Terraform creates a Cloud Run service **ollama** and sets the agent’s `OLLAMA_BASE_URL` to it. The image is `ollama/ollama`; you can tune CPU/memory via `ollama_cpu` and `ollama_memory` in `terraform.tfvars`. **Models are pulled automatically during `deploy.sh`** (Cloud Run has ephemeral storage; models are lost when the Ollama container is replaced). If you skip the pull or it fails, run manually:
 
 ```bash
-cd infra/gcp/singing-duck/scripts
-./pull-ollama-models.sh
+./infra/gcp/singing-duck/scripts/pull-ollama-models.sh
 ```
 
 Pulls **tinyllama** (chat) and **nomic-embed-text** (embeddings for RAG).
@@ -184,6 +189,27 @@ To use an **external** Ollama (e.g. your own VM), set `create_ollama_service = f
 | `scripts/enable-pgvector.sh` | Run `CREATE EXTENSION vector` and app schema in Cloud SQL |
 | `scripts/pull-ollama-models.sh` | Pull chat + embedding models on Ollama Cloud Run service |
 
+## Performance Tuning (vs local Mac)
+
+GCP Cloud Run can feel slower than running locally. To speed up:
+
+| Component | Variable | Default | Tip |
+|-----------|----------|---------|-----|
+| **Ollama** | `ollama_cpu` | 8 | More CPU = faster inference (tinyllama, nomic-embed-text) |
+| **Ollama** | `ollama_memory` | 8Gi | 8Gi recommended; max 32Gi |
+| **Agent** | `agent_min_instances` | 0 | Set to 1 for always-warm (no cold start) |
+| **Indexer** | `indexer_channel_delay_ms` | 6000 | Lower = faster (watch Slack rate limits) |
+| **Indexer** | `indexer_embed_concurrency` | 4 | Parallel embeddings per channel |
+
+In `terraform.tfvars`:
+```hcl
+ollama_cpu    = "8"
+ollama_memory = "8Gi"
+agent_min_instances = 1
+indexer_channel_delay_ms = "6000"
+indexer_embed_concurrency = "4"
+```
+
 ## Cost (Approximate)
 
 - Cloud Run: ~$20–50/month (traffic-dependent)
@@ -194,10 +220,15 @@ To use an **external** Ollama (e.g. your own VM), set `create_ollama_service = f
 
 ## Troubleshooting
 
+- **"psql not found" when running enable-pgvector.sh** — Install the PostgreSQL client: `brew install libpq && export PATH="$(brew --prefix libpq)/bin:$PATH"`. Add that export to your shell profile for persistence.
+- **SSL connection errors after enabling require_ssl** — The `database-url` secret includes `sslmode=require`. Re-run `terraform apply` and redeploy the app so Cloud Run picks up the new secret version. The `enable-pgvector.sh` script uses Cloud SQL Proxy (which uses encrypted connections) and does not need changes.
+- **"connection requires a valid client certificate"** — Cloud SQL may be in strict SSL mode. Terraform sets `ssl_mode = "ENCRYPTED_ONLY"` to avoid client-cert requirement. Run `terraform apply` and check GCP Console → SQL → your instance → Connections: ensure it's not set to "Trusted client certificate required".
+- **"Ollama embeddings failed: 429 Rate exceeded"** — The app now retries automatically (3 attempts with backoff). If it persists, the single Ollama instance may be overloaded. Increase `max_instance_request_concurrency` in `ollama.tf` (e.g. to 6) and redeploy, or run during lower-traffic periods.
 - **"model nomic-embed-text not found"** or **"model tinyllama not found"** or **"retrieveContexts failed"** — Run `./scripts/pull-ollama-models.sh` to pull both models (tinyllama + nomic-embed-text). Both are required. First pull can take several minutes. See step 7.
 - **"user does not have permission to access Project"** — Run `gcloud auth application-default login` and ensure your account has Owner or Editor on the project. Ensure `gcloud config set project YOUR_PROJECT_ID` matches your project.
 - **"Compute Engine API has not been used... or it is disabled"** — The `create-project-and-apply.sh` script enables required APIs before Terraform. If running Terraform manually, run `gcloud services enable compute.googleapis.com run.googleapis.com vpcaccess.googleapis.com servicenetworking.googleapis.com --project=singing-duck`, wait 60s, then `terraform apply`.
 - **API 403 "SERVICE_DISABLED" during apply** — APIs were enabled but hadn't propagated. Enable all APIs via gcloud (see above), wait 60–90s, then run `terraform plan -out=tfplan` and `terraform apply tfplan` again.
+- **"Cannot modify allocated ranges in CreateConnection. Please use UpdateConnection. Existing allocated IP ranges: [default-ip-range]"** — A service networking connection already exists. Import it first: `terraform import google_service_networking_connection.private_vpc_connection projects/YOUR_PROJECT_ID/global/networks/default:servicenetworking.googleapis.com` then `terraform apply`.
 - **"CloudSQL doesn't support IPv6" when running enable-pgvector.sh** — The script now uses `gcloud beta sql connect` (Cloud SQL Proxy). If you still hit this, ensure the beta components are installed: `gcloud components install beta`.
 
 ## Destroying

@@ -5,20 +5,16 @@ data "google_compute_network" "default" {
   depends_on = [google_project_service.compute]
 }
 
-# Allocate IP range for Private Service Access (Cloud SQL)
-resource "google_compute_global_address" "private_ip_range" {
-  name          = "slack-rag-private-ip-range"
-  purpose       = "VPC_PEERING"
-  address_type  = "INTERNAL"
-  prefix_length = 16
-  network       = data.google_compute_network.default.id
-}
-
-# Create private connection for Cloud SQL
+# Service networking connection already exists with allocated range [default-ip-range].
+# Import it first, then use the existing range (do not create a new connection):
+#
+#   terraform import google_service_networking_connection.private_vpc_connection \
+#     projects/singing-duck-boso/global/networks/default:servicenetworking.googleapis.com
+#
 resource "google_service_networking_connection" "private_vpc_connection" {
   network                 = data.google_compute_network.default.id
   service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges = [google_compute_global_address.private_ip_range.name]
+  reserved_peering_ranges = ["default-ip-range"]
 }
 
 # Serverless VPC Access connector so Cloud Run can reach Cloud SQL private IP

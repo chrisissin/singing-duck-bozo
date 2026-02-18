@@ -24,6 +24,7 @@ resource "google_sql_database_instance" "main" {
     ip_configuration {
       ipv4_enabled    = true   # Required for Cloud SQL Proxy from laptop (enable-pgvector.sh)
       private_network = data.google_compute_network.default.id  # Cloud Run uses private IP via VPC
+      require_ssl     = true   # Enforce SSL (satisfies SCC). Note: provider warns deprecated; ssl_mode=ENCRYPTED_ONLY causes 400 for Postgres.
     }
 
     database_flags {
@@ -47,6 +48,12 @@ resource "google_sql_database_instance" "main" {
   }
 
   deletion_protection = false
+
+  lifecycle {
+    ignore_changes = [
+      settings[0].ip_configuration  # SSL/connection settings; manage in GCP Console to avoid 400 on apply
+    ]
+  }
 }
 
 resource "google_sql_database" "db" {

@@ -1,6 +1,6 @@
 import { generateTerragruntAutoscalerDiff, generateMachineTypeDiff } from "./mcpClient.js";
 
-async function formatActionTemplate(template, parsed, originalText = null, isGitPR = false, gcloudCommandTemplate = null) {
+async function formatActionTemplate(template, parsed, originalText = null, isGitPR = false, gcloudCommandTemplate = null, policy = null) {
   if (!template) {
     return null;
   }
@@ -139,6 +139,32 @@ name: scale up name (eq big sale)
         return `Error preparing scaling schedule script: ${error.message}`;
       }
     }
+
+    if (mcpTool === "create_scaling_schedule_pr") {
+      // Preview the YAML diff that will be added via GitHub API
+      const schedule = parsed.schedule || parsed.start || null;
+      const duration = parsed.duration || parsed.duration_sec || null;
+      const name = parsed.ticket_number || parsed.name || parsed.schedule_name || null;
+
+      if (!schedule || !duration || !name) {
+        return `Missing required parameters. Need: schedule (mm hh dd MM * YYYY), duration (seconds), ticket_number. Current: schedule=${schedule}, duration=${duration}, ticket_number=${name}`;
+      }
+
+      const ticketNumber = String(name).trim();
+      const scheduleString = String(schedule).trim();
+      const filePath = "production/scaling_schedules/api_disconnect_gacha_login_tmt.yaml";
+      const owner = policy?.github_owner || "?";
+      const repo = policy?.github_repo || "?";
+
+      const yamlBlock = `# ${ticketNumber}
+- name                  : ${ticketNumber}
+  schedule              : ${scheduleString}
+  duration_sec          : ${duration}
+  min_required_replicas : \${sch_high}
+  time_zone             : Etc/UTC`;
+
+      return `*PR that will be created (via GitHub API):*\n\n*Repo:* \`${owner}/${repo}\`\n*File:* \`${filePath}\`\n*Commit:* \`feat: append ${ticketNumber} scaling schedule\`\n\n*YAML to append:*\n\n\`\`\`yaml\n${yamlBlock}\n\`\`\`\n\n*Parameters:*\n- Name: ${ticketNumber}\n- Schedule: \`${scheduleString}\`\n- Duration: ${duration} seconds\n\n✅ Click *Approve & Execute* to create the PR`;
+    }
     
     // For other MCP tools, return the tool name for now
     return `MCP tool: ${mcpTool}`;
@@ -217,7 +243,7 @@ export async function formatReport({ parsed, decision, policy = null, originalTe
   } 
   // Handle single action template (legacy format)
   else if (policy?.action_template) {
-    action = await formatActionTemplate(policy.action_template, parsed, originalText);
+    action = await formatActionTemplate(policy.action_template, parsed, originalText, false, null, policy);
     actionOptions = action;
   }
   

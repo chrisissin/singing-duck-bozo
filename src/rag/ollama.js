@@ -1,3 +1,17 @@
+/** Retry 429 (rate limit) and 503 (overloaded) with exponential backoff. Max 3 attempts. */
+export async function fetchWithRetry(url, options, maxAttempts = 3) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url, options);
+    const shouldRetry = (res.status === 429 || res.status === 503) && attempt < maxAttempts;
+    if (!shouldRetry) return res;
+    const retryAfter = parseInt(res.headers.get("retry-after") || "0", 10);
+    const delayMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(1000 * 2 ** attempt, 10000);
+    console.warn(`[ollama] ${res.status} ${res.status === 429 ? "Rate exceeded" : "Service unavailable"}, retry ${attempt}/${maxAttempts} in ${delayMs}ms`);
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return null; // unreachable
+}
+
 export async function ollamaEmbed(text) {
   const baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
   const model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
@@ -50,11 +64,12 @@ export async function ollamaEmbed(text) {
     try {
       let res;
       try {
-        res = await fetch(`${baseUrl}/api/embeddings`, {
+        res = await fetchWithRetry(`${baseUrl}/api/embeddings`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model, prompt: textToUse }),
         });
+        if (!res) throw new Error("429 retries exhausted");
       } catch (fetchErr) {
         const cause = fetchErr?.cause?.message || fetchErr?.cause || fetchErr?.message;
         throw new Error(`Ollama embeddings fetch failed (${baseUrl}): ${cause}`);
@@ -107,7 +122,7 @@ export async function ollamaChat({ prompt }) {
 
   let res;
   try {
-    res = await fetch(`${baseUrl}/api/generate`, {
+    res = await fetchWithRetry(`${baseUrl}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -116,6 +131,7 @@ export async function ollamaChat({ prompt }) {
         stream: false
       }),
     });
+    if (!res) throw new Error("429 retries exhausted");
   } catch (fetchErr) {
     const cause = fetchErr?.cause?.message || fetchErr?.cause || fetchErr?.message;
     throw new Error(`Ollama generate fetch failed (${baseUrl}): ${cause}`);

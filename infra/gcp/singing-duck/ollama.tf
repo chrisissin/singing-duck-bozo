@@ -15,8 +15,8 @@ resource "google_cloud_run_v2_service" "ollama" {
       min_instance_count = 1
       max_instance_count = 1
     }
-    # Allow embeddings + chat + parser to run without 429 (agent makes 2–3 concurrent Ollama calls)
-    max_instance_request_concurrency = 4
+    # Allow embeddings + chat + parser + Web UI to run without 429 (parser chat can take 60s+)
+    max_instance_request_concurrency = 6
     timeout                          = "3600s" # 60 min for long inference
 
     containers {
@@ -34,6 +34,14 @@ resource "google_cloud_run_v2_service" "ollama" {
       env {
         name  = "OLLAMA_KEEP_ALIVE"
         value = "30m"
+      }
+      env {
+        name  = "OLLAMA_NUM_PARALLEL"
+        value = var.ollama_num_parallel
+      }
+      env {
+        name  = "OLLAMA_MAX_LOADED_MODELS"
+        value = var.ollama_max_loaded_models
       }
 
       command = ["ollama"]

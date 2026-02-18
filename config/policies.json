@@ -134,7 +134,18 @@
     {
       "alert_type": "scaling_intent_detected",
       "name": "Scaling Intent Detection",
-      "patterns": [],
+      "patterns": [
+        {
+          "type": "regex",
+          "pattern": "(?:scale\\s+up|scale-up|we need to scale up|need to scale up)\\s*(?:mcoc|the\\s+servers?|servers?|api|everything|production)?",
+          "capture_groups": {}
+        },
+        {
+          "type": "regex",
+          "pattern": "(?:add|spin\\s+up|scale)\\s+(?:more\\s+)?(?:servers?|instances?|capacity)",
+          "capture_groups": {}
+        }
+      ],
       "extraction_rules": {
         "alert_type": "scaling_intent_detected",
         "project_id": null,
@@ -278,7 +289,10 @@
         "missing_fields": ["schedule", "duration", "name"],
         "parse_method": "policy"
       },
-      "action_template": "MCP:generate_scaling_schedule_yaml_diff",
+      "_action_template_script": "MCP:generate_scaling_schedule_yaml_diff",
+      "action_template": "MCP:create_scaling_schedule_pr",
+      "github_owner": "explodingbarrel",
+      "github_repo": "mcoc-production",
       "summary_template": "📋 *Scale PR Request Detected*\n\nI found a scaling PR request. Generating the YAML diff:\n\n{action}",
       "default_decision": "NEEDS_APPROVAL",
       "sample_texts": [

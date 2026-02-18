@@ -14,7 +14,15 @@ async function getPool() {
     const hint = !connectionString ? "missing" : connectionString === "undefined" ? "literal 'undefined'" : "invalid format (expected postgresql://...)";
     throw new Error(`DATABASE_URL ${hint} after ensureSecrets. Rebuild and redeploy, verify Secret Manager 'database-url', and indexer SA has secretmanager.secretAccessor. Set DEBUG_SECRETS=1 for env diagnostics.`);
   }
-  poolInstance = new Pool({ connectionString });
+  const poolConfig = { connectionString };
+  const needsSsl = connectionString.includes("sslmode=require") || connectionString.includes("sslmode=verify") || /@10\.\d+\.\d+\.\d+/.test(connectionString);
+  if (needsSsl) {
+    poolConfig.ssl = { rejectUnauthorized: false };
+    if (connectionString.includes("sslmode=")) {
+      poolConfig.connectionString = connectionString.replace(/([?&])sslmode=[^&]*(&|$)/g, (_, _sep, after) => (after === "&" ? "?" : "")).replace(/\?$/, "");
+    }
+  }
+  poolInstance = new Pool(poolConfig);
   await ensureSchema(poolInstance);
   return poolInstance;
 }

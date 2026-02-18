@@ -56,10 +56,15 @@ async function getMCPClient() {
 
   const mcpServerPath = join(__dirname, "../services/automation/gcpMcpServer.js");
 
+  // MCP SDK uses a whitelist of env vars by default (HOME, PATH, etc.) - GITHUB_TOKEN is excluded.
+  // Pass full process.env so the MCP server (gcpMcpServer) receives GITHUB_TOKEN, ENABLE_MCP, etc.
+  const env = { ...process.env };
+
   // Create client transport
   const transport = new StdioClientTransportClass({
     command: "node",
-    args: [mcpServerPath]
+    args: [mcpServerPath],
+    env
   });
 
   mcpClient = new ClientClass(
@@ -393,6 +398,82 @@ export async function generateScalingScheduleYamlDiff(params) {
       serviceName: executionResult.serviceName,
       scheduleName: executionResult.scheduleName,
       message: executionResult.message || "YAML diff generated successfully"
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+/**
+ * Create scaling schedule PR via GitHub API (MCP tool create_scaling_schedule_pr)
+ *
+ * @param {Object} params
+ * @param {string} params.schedule - Schedule "mm hh dd MM * YYYY" (e.g. "30 17 4 02 * 2026")
+ * @param {number} params.duration - Duration in seconds (e.g. 7200)
+ * @param {string} params.name - Scale up name (e.g. "big sale")
+ * @param {string} [params.owner] - GitHub repo owner (default: GITHUB_REPO_OWNER env)
+ * @param {string} [params.repo] - GitHub repo name (default: GITHUB_REPO_NAME env)
+ * @returns {Promise<Object>} - Result with prUrl, prNumber, etc.
+ */
+export async function createScalingSchedulePR(params) {
+  if (process.env.ENABLE_MCP !== "true") {
+    throw new Error("MCP is not enabled. Set ENABLE_MCP=true to enable.");
+  }
+
+  const { schedule, duration, name, owner, repo } = params;
+
+  if (!schedule || !duration || !name) {
+    throw new Error("Missing required parameters: schedule, duration, name");
+  }
+  if (!owner || !repo) {
+    throw new Error("Missing owner/repo. Policy must include github_owner and github_repo.");
+  }
+
+  try {
+    const client = await getMCPClient();
+    const result = await client.callTool({
+      name: "create_scaling_schedule_pr",
+      arguments: {
+        schedule,
+        duration: typeof duration === "string" ? parseInt(duration, 10) : duration,
+        name,
+        owner,
+        repo
+      }
+    });
+
+    if (result.isError || !result.content || result.content.length === 0) {
+      const errorText = result.content?.[0]?.text || "Unknown error";
+      let errorDetails = errorText;
+      try {
+        const errorObj = JSON.parse(errorText);
+        errorDetails = errorObj.error || errorText;
+        if (errorObj.details) errorDetails += `\n${JSON.stringify(errorObj.details)}`;
+      } catch (e) {
+        // Not JSON, use as-is
+      }
+      throw new Error(`MCP execution failed: ${errorDetails}`);
+    }
+
+    const resultText = result.content[0].text;
+    const executionResult = JSON.parse(resultText);
+
+    if (executionResult.error) {
+      throw new Error(executionResult.error);
+    }
+
+    return {
+      success: true,
+      ticketNumber: executionResult.ticketNumber,
+      schedule: executionResult.schedule,
+      duration: executionResult.duration,
+      prUrl: executionResult.prUrl,
+      prNumber: executionResult.prNumber,
+      message: executionResult.message || "PR created"
     };
   } catch (error) {
     return {

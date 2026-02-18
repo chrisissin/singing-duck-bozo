@@ -40,6 +40,10 @@ resource "google_cloud_run_v2_job" "indexer" {
           value = "nomic-embed-text"
         }
         env {
+          name  = "INDEXER_EMBED_CONCURRENCY"
+          value = var.indexer_embed_concurrency
+        }
+        env {
           name = "DATABASE_URL"
           value_source {
             secret_key_ref {
@@ -50,11 +54,11 @@ resource "google_cloud_run_v2_job" "indexer" {
         }
         env {
           name  = "SLACK_CHANNEL_DELAY_MS"
-          value = "12000"
+          value = var.indexer_channel_delay_ms
         }
         env {
           name  = "SLACK_THREAD_DELAY_MS"
-          value = "2000"
+          value = var.indexer_thread_delay_ms
         }
         env {
           name = "SLACK_BOT_TOKEN"
@@ -68,8 +72,8 @@ resource "google_cloud_run_v2_job" "indexer" {
 
         resources {
           limits = {
-            cpu    = "1"
-            memory = "1Gi"
+            cpu    = var.indexer_cpu
+            memory = var.indexer_memory
           }
         }
       }

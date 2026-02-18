@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
+import { Octokit } from "@octokit/rest";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -126,7 +127,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "generate_scaling_schedule_yaml_diff",
-        description: "Generates a YAML diff for scaling schedule configuration from SCALEPRREQUEST format. Takes schedule (mm hh dd MM * YYYY), duration in seconds, and name.",
+        description: "Generates a YAML diff for scaling schedule configuration from SCALEPRREQUEST format. Uses bash script. Takes schedule (mm hh dd MM * YYYY), duration in seconds, and name.",
         inputSchema: {
           type: "object",
           properties: {
@@ -144,6 +145,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             }
           },
           required: ["schedule", "duration", "name"]
+        }
+      },
+      {
+        name: "create_scaling_schedule_pr",
+        description: "Creates a PR via GitHub API by appending a scaling schedule to the YAML file. Same params as generate_scaling_schedule_yaml_diff plus repo. Requires GITHUB_TOKEN.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            schedule: {
+              type: "string",
+              description: "Schedule in format 'mm hh dd MM * YYYY' (e.g., '30 17 4 02 * 2026')"
+            },
+            duration: {
+              type: "number",
+              description: "Duration in seconds (e.g., 7200 for 2 hours)"
+            },
+            name: {
+              type: "string",
+              description: "Scale up name (e.g., 'big sale')"
+            },
+            owner: {
+              type: "string",
+              description: "GitHub repo owner (e.g., 'myorg')"
+            },
+            repo: {
+              type: "string",
+              description: "GitHub repo name (e.g., 'mcoc-production')"
+            },
+            baseBranch: {
+              type: "string",
+              description: "Base branch to create PR from (default: master)"
+            },
+            filePath: {
+              type: "string",
+              description: "Path to YAML file (default: production/scaling_schedules/api_disconnect_gacha_login_tmt.yaml)"
+            }
+          },
+          required: ["schedule", "duration", "name", "owner", "repo"]
         }
       }
     ]
@@ -480,6 +519,171 @@ index 71c5e0f35504..f40f522f9942 100644
             stderr: err.stderr || "",
             stdout: err.stdout || "" 
           }) 
+        }],
+        isError: true
+      };
+    }
+  }
+
+  if (name === "create_scaling_schedule_pr") {
+    try {
+      const {
+        schedule,
+        duration,
+        name: scheduleName,
+        owner,
+        repo,
+        baseBranch = "master",
+        filePath = "production/scaling_schedules/api_disconnect_gacha_login_tmt.yaml"
+      } = args;
+
+      if (!schedule || !duration || !scheduleName || !owner || !repo) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ error: "Missing required parameters: schedule, duration, name, owner, repo" })
+          }],
+          isError: true
+        };
+      }
+
+      const token = process.env.GITHUB_TOKEN;
+      if (!token) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ error: "GITHUB_TOKEN environment variable is required for create_scaling_schedule_pr" })
+          }],
+          isError: true
+        };
+      }
+
+      const scheduleString = String(schedule).trim();
+      const ticketNumber = String(scheduleName).trim();
+      const octokit = new Octokit({ auth: token });
+
+      const timestamp = new Date().toISOString();
+      console.log(`[${timestamp}] [MCP Server] create_scaling_schedule_pr: ${owner}/${repo}, branch: ${ticketNumber}`);
+
+      // 1. Get repo metadata to resolve actual default branch (avoids 404 when repo uses 'main' vs 'master')
+      const { data: repoData } = await octokit.rest.repos.get({
+        owner,
+        repo
+      });
+      // Use repo's actual default branch when baseBranch is default "master" (avoids 404 for repos using "main")
+      const effectiveBaseBranch = (baseBranch === "master" || !baseBranch)
+        ? (repoData.default_branch || "main")
+        : baseBranch;
+      console.log(`[${timestamp}] [MCP Server] Using base branch: ${effectiveBaseBranch} (repo default: ${repoData.default_branch})`);
+
+      // 2. Get base branch ref
+      const { data: refData } = await octokit.rest.git.getRef({
+        owner,
+        repo,
+        ref: `heads/${effectiveBaseBranch}`
+      });
+      const baseSha = refData.object.sha;
+
+      // 2. Create new branch from base
+      await octokit.rest.git.createRef({
+        owner,
+        repo,
+        ref: `refs/heads/${ticketNumber}`,
+        sha: baseSha
+      });
+
+      // 3. Get current file content (or create from scratch if missing)
+      let currentContent = "";
+      let fileSha = null;
+      try {
+        const { data: fileData } = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: filePath,
+          ref: effectiveBaseBranch
+        });
+        if (Array.isArray(fileData)) {
+          throw new Error(`Path ${filePath} is a directory, not a file`);
+        }
+        currentContent = Buffer.from(fileData.content, "base64").toString("utf-8");
+        fileSha = fileData.sha;
+      } catch (e) {
+        if (e.response?.status === 404) {
+          currentContent = "---\n";
+        } else {
+          throw e;
+        }
+      }
+
+      const appendBlock = `
+
+# ${ticketNumber}
+- name                  : ${ticketNumber}
+  schedule              : ${scheduleString}
+  duration_sec          : ${duration}
+  min_required_replicas : \${sch_high}
+  time_zone             : Etc/UTC`;
+      const newContent = currentContent + appendBlock;
+
+      // 4. Create or update file on new branch
+      const updateParams = {
+        owner,
+        repo,
+        path: filePath,
+        message: `feat: append ${ticketNumber} scaling schedule`,
+        content: Buffer.from(newContent).toString("base64"),
+        branch: ticketNumber
+      };
+      if (fileSha) {
+        updateParams.sha = fileSha;
+      }
+      await octokit.rest.repos.createOrUpdateFileContents(updateParams);
+
+      // 5. Create PR
+      const { data: pr } = await octokit.rest.pulls.create({
+        owner,
+        repo,
+        title: `feat: append ${ticketNumber} scaling schedule`,
+        head: ticketNumber,
+        base: effectiveBaseBranch,
+        body: `Adds scaling schedule for ${ticketNumber}.
+
+- **Schedule**: \`${scheduleString}\`
+- **Duration**: ${duration} seconds
+- **File**: \`${filePath}\``
+      });
+
+      const prUrl = pr.html_url;
+      console.log(`[${timestamp}] [MCP Server] PR created: ${prUrl}`);
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            ticketNumber,
+            schedule: scheduleString,
+            duration,
+            prUrl,
+            prNumber: pr.number,
+            message: `PR created: ${prUrl}`
+          })
+        }]
+      };
+    } catch (err) {
+      const timestamp = new Date().toISOString();
+      console.error(`[${timestamp}] [MCP Server] create_scaling_schedule_pr failed:`, err.message);
+      let errorMsg = err.message;
+      if (err.response?.status === 404) {
+        errorMsg += " (Repo may not exist, or GITHUB_TOKEN lacks access. Ensure token has 'repo' scope and access to the organization.)";
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: `Failed to create scaling schedule PR: ${errorMsg}`,
+            details: err.response?.data || err.toString()
+          })
         }],
         isError: true
       };

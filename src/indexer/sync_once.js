@@ -25,8 +25,9 @@ async function main() {
   const limit = parseInt(process.env.HISTORY_PAGE_LIMIT || "200", 10);
   const maxMessages = parseInt(process.env.MAX_MESSAGES_PER_WINDOW || "20", 10);
   const maxMinutes = parseInt(process.env.MAX_WINDOW_MINUTES || "10", 10);
-  const channelDelayMs = parseInt(process.env.SLACK_CHANNEL_DELAY_MS || "12000", 10);
-  const threadDelayMs = parseInt(process.env.SLACK_THREAD_DELAY_MS || "2000", 10);
+  const channelDelayMs = parseInt(process.env.SLACK_CHANNEL_DELAY_MS || "6000", 10);
+  const threadDelayMs = parseInt(process.env.SLACK_THREAD_DELAY_MS || "1000", 10);
+  const embedConcurrency = parseInt(process.env.INDEXER_EMBED_CONCURRENCY || "4", 10);
 
   const channels = await listAllPublicChannels(web);
   console.log(`Syncing ${channels.length} channels...`);
@@ -74,6 +75,8 @@ async function main() {
       nonThread.push(m);
     }
 
+    const chunksToEmbed = [];
+
     let threadIdx = 0;
     for (const thread_ts of threadRoots) {
       if (threadIdx > 0 && threadDelayMs > 0) await new Promise((r) => setTimeout(r, threadDelayMs));
@@ -90,14 +93,7 @@ async function main() {
         resolver
       });
 
-      if (!chunk.text?.trim()) continue;
-      try {
-        const embedding = await ollamaEmbed(chunk.text);
-        await upsertChunk({ ...chunk, embedding });
-      } catch (e) {
-        console.error(`[indexer] Ollama embed failed for #${channel_name} thread ${thread_ts}:`, e?.message || e);
-        throw e;
-      }
+      if (chunk.text?.trim()) chunksToEmbed.push(chunk);
     }
 
     const windows = await buildWindows({
@@ -111,14 +107,32 @@ async function main() {
     });
 
     for (const w of windows) {
-      if (!w.text?.trim()) continue;
-      try {
-        const embedding = await ollamaEmbed(w.text);
-        await upsertChunk({ ...w, embedding });
-      } catch (e) {
-        console.error(`[indexer] Ollama embed failed for #${channel_name} window:`, e?.message || e);
-        throw e;
+      if (w.text?.trim()) chunksToEmbed.push(w);
+    }
+
+    if (chunksToEmbed.length > 0) {
+      async function processWithConcurrency(items, fn, concurrency) {
+        const results = [];
+        for (let i = 0; i < items.length; i += concurrency) {
+          const batch = items.slice(i, i + concurrency);
+          const batchResults = await Promise.all(batch.map((item) => fn(item)));
+          results.push(...batchResults);
+        }
+        return results;
       }
+      await processWithConcurrency(
+        chunksToEmbed,
+        async (chunk) => {
+          try {
+            const embedding = await ollamaEmbed(chunk.text);
+            await upsertChunk({ ...chunk, embedding });
+          } catch (e) {
+            console.error(`[indexer] Ollama embed failed for #${channel_name}:`, e?.message || e);
+            throw e;
+          }
+        },
+        embedConcurrency
+      );
     }
 
     const latest_ts = newMessages[newMessages.length - 1]?.ts;

@@ -16,12 +16,13 @@ resource "google_cloud_run_v2_service" "agent" {
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_version.slack_bot_token_placeholder,
     google_secret_manager_secret_version.slack_signing_secret_placeholder,
+    google_secret_manager_secret_version.github_token_placeholder,
   ]
 
   template {
     service_account = google_service_account.agent.email
     scaling {
-      min_instance_count = 0
+      min_instance_count = var.agent_min_instances
       max_instance_count = 10
     }
     max_instance_request_concurrency = 80
@@ -88,11 +89,20 @@ resource "google_cloud_run_v2_service" "agent" {
           }
         }
       }
+      env {
+        name = "GITHUB_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.github_token.secret_id
+            version = "latest"
+          }
+        }
+      }
 
       resources {
         limits = {
-          cpu    = "2"
-          memory = "2Gi"
+          cpu    = var.agent_cpu
+          memory = var.agent_memory
         }
         cpu_idle = true
       }
