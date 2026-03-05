@@ -606,6 +606,17 @@ This should return: `{"challenge":"test123"}`
 - Check server logs for errors
 - Make sure `app_mentions` event is added under "Subscribe to bot events"
 
+### Buttons return "This app responded with Status Code 404" (Search All Channels, Approve, Reject)
+@mentions work but button clicks 404 because **Interactivity** uses a separate URL setting from Event Subscriptions.
+
+**Fix:**
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → your app → **Interactivity & Shortcuts** (under Features)
+2. Turn **Interactivity** ON
+3. Set **Request URL** to the same URL as Event Subscriptions: `https://your-url/slack/events` (ngrok URL locally, or Cloud Run URL in production)
+4. Wait for the green checkmark and click **Save Changes**
+
+Both Event Subscriptions and Interactivity & Shortcuts must point to `https://your-url/slack/events`.
+
 ### "Missing scope" errors
 If you see scope errors when running indexing:
 - Verify all 5 scopes are added: `app_mentions:read`, `channels:read`, `channels:history`, `chat:write`, `reactions:write`

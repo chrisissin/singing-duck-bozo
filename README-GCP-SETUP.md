@@ -266,6 +266,7 @@ slack_team_id = "T0G9PQBBK"  # Your workspace ID from auth.teams.list or Slack a
 - **API 403 "SERVICE_DISABLED" during apply** — APIs were enabled but hadn't propagated. Enable all APIs via gcloud (see above), wait 60–90s, then run `terraform plan -out=tfplan` and `terraform apply tfplan` again.
 - **"Cannot modify allocated ranges in CreateConnection. Please use UpdateConnection. Existing allocated IP ranges: [default-ip-range]"** — A service networking connection already exists. Import it first: `terraform import google_service_networking_connection.private_vpc_connection projects/YOUR_PROJECT_ID/global/networks/default:servicenetworking.googleapis.com` then `terraform apply`.
 - **"CloudSQL doesn't support IPv6" when running enable-pgvector.sh** — The script now uses `gcloud beta sql connect` (Cloud SQL Proxy). If you still hit this, ensure the beta components are installed: `gcloud components install beta`.
+- **Buttons return "This app responded with Status Code 404"** (Search All Channels, Approve, Reject) — @mentions work but button clicks 404 because Interactivity uses a separate URL. Go to [api.slack.com/apps](https://api.slack.com/apps) → your app → **Interactivity & Shortcuts** → enable Interactivity → set Request URL to `https://<agent-url>/slack/events` (same as Event Subscriptions). Get the URL: `gcloud run services describe slack-rag-bot --region=us-central1 --format='value(status.url)'`.
 
 ## Destroying
 
